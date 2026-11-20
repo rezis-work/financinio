@@ -1,0 +1,356 @@
+import { env } from '$env/dynamic/public';
+import type {
+	Account,
+	AuthTokenResponse,
+	BudgetOverview,
+	BudgetPeriod,
+	CategorizationRule,
+	Category,
+	DashboardSummary,
+	DebtInput,
+	DebtPayoffComparison,
+	DetectRecurringResponse,
+	FinancialGoal,
+	GoalType,
+	ImportBatch,
+	ImportBatchDetail,
+	NetWorthOverview,
+	NetWorthSnapshot,
+	RecurringCadence,
+	RecurringItem,
+	RecurringOverview,
+	SystemStatus,
+	Transaction,
+	TransactionListResponse,
+	User,
+	WhatIfResponse
+} from './types';
+
+const API_BASE = env.PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+
+const ACCESS_KEY = 'financinio_access_token';
+const REFRESH_KEY = 'financinio_refresh_token';
+
+export function getStoredAccessToken(): string | null {
+	if (typeof window === 'undefined') return null;
+	return localStorage.getItem(ACCESS_KEY);
+}
+
+export function getStoredRefreshToken(): string | null {
+	if (typeof window === 'undefined') return null;
+	return localStorage.getItem(REFRESH_KEY);
+}
+
+export function saveTokens(access: string, refresh: string): void {
+	if (typeof window === 'undefined') return;
+	localStorage.setItem(ACCESS_KEY, access);
+	localStorage.setItem(REFRESH_KEY, refresh);
+}
+
+export function clearTokens(): void {
+	if (typeof window === 'undefined') return;
+	localStorage.removeItem(ACCESS_KEY);
+	localStorage.removeItem(REFRESH_KEY);
+}
+
+export class ApiError extends Error {
+	status: number;
+	constructor(status: number, message: string) {
+		super(message);
+		this.status = status;
+	}
+}
+
+async function tryRefreshToken(): Promise<string | null> {
+	const refresh = getStoredRefreshToken();
+	if (!refresh) return null;
+	const res = await fetch(`${API_BASE}/auth/refresh`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		credentials: 'include',
+		body: JSON.stringify({ refresh_token: refresh })
+	});
+	if (!res.ok) {
+		clearTokens();
+		return null;
+	}
+	const data: AuthTokenResponse = await res.json();
+	saveTokens(data.access_token, data.refresh_token);
+	return data.access_token;
+}
+
+async function request<T>(
+	path: string,
+	options: RequestInit = {},
+	retryOn401 = true
+): Promise<T> {
+	const headers = new Headers(options.headers || {});
+	const token = getStoredAccessToken();
+	if (token) {
+		headers.set('Authorization', `Bearer ${token}`);
+	}
+	if (!(options.body instanceof FormData) && !headers.has('Content-Type') && options.body) {
+		headers.set('Content-Type', 'application/json');
+	}
+
+	const res = await fetch(`${API_BASE}${path}`, {
+		...options,
+		headers,
+		credentials: 'include'
+	});
+
+	if (res.status === 401 && retryOn401) {
+		const newToken = await tryRefreshToken();
+		if (newToken) {
+			return request<T>(path, options, false);
+		}
+	}
+
+	if (!res.ok) {
+		let detail = `Request failed (${res.status})`;
+		try {
+			const body = await res.json();
+			if (typeof body.detail === 'string') detail = body.detail;
+			else if (Array.isArray(body.detail) && body.detail[0]?.msg) detail = body.detail[0].msg;
+		} catch {
+			// ignore non-json error body
+		}
+		throw new ApiError(res.status, detail);
+	}
+
+	if (res.status === 204) {
+		return undefined as T;
+	}
+	return res.json();
+}
+
+export const api = {
+	// Auth
+	register: (payload: {
+		email: string;
+		password: string;
+		full_name: string;
+		base_currency: string;
+	}) =>
+		request<AuthTokenResponse>(
+			'/auth/register',
+			{ method: 'POST', body: JSON.stringify(payload) },
+			false
+		),
+
+	login: (payload: { email: string; password: string }) =>
+		request<AuthTokenResponse>(
+			'/auth/login',
+			{ method: 'POST', body: JSON.stringify(payload) },
+			false
+		),
+
+	logout: async () => {
+		const refresh = getStoredRefreshToken();
+		try {
+			await request<void>(
+				'/auth/logout',
+				{ method: 'POST', body: JSON.stringify({ refresh_token: refresh }) },
+				false
+			);
+		} finally {
+			clearTokens();
+		}
+	},
+
+	me: () => request<User>('/auth/me'),
+
+	updateMe: (payload: { full_name?: string; base_currency?: string; fiscal_start_day?: number }) =>
+		request<User>('/auth/me', { method: 'PATCH', body: JSON.stringify(payload) }),
+
+	// Dashboard
+	dashboardSummary: (months = 6) => request<DashboardSummary>(`/dashboard/summary?months=${months}`),
+	systemStatus: () => request<SystemStatus>('/dashboard/system-status'),
+
+	// Accounts
+	listAccounts: (includeArchived = false) =>
+		request<Account[]>(`/accounts?include_archived=${includeArchived}`),
+
+	createAccount: (payload: {
+		name: string;
+		type: string;
+		currency: string;
+		initial_balance: string;
+		institution?: string;
+		color?: string;
+	}) => request<Account>('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
+
+	updateAccount: (id: string, payload: Partial<Account>) =>
+		request<Account>(`/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+	deleteAccount: (id: string) => request<void>(`/accounts/${id}`, { method: 'DELETE' }),
+
+	// Categories & Rules
+	listCategories: () => request<Category[]>('/categories'),
+	createCategory: (payload: { name: string; kind: string; color: string; icon?: string }) =>
+		request<Category>('/categories', { method: 'POST', body: JSON.stringify(payload) }),
+
+	listRules: () => request<CategorizationRule[]>('/categories/rules'),
+	createRule: (payload: {
+		match_pattern: string;
+		match_type: 'contains' | 'exact' | 'regex';
+		category_id: string;
+		merchant_override?: string;
+		priority?: number;
+	}) => request<CategorizationRule>('/categories/rules', { method: 'POST', body: JSON.stringify(payload) }),
+
+	deleteRule: (id: string) => request<void>(`/categories/rules/${id}`, { method: 'DELETE' }),
+
+	// Transactions
+	listTransactions: (params: Record<string, string | number | undefined> = {}) => {
+		const qs = new URLSearchParams();
+		for (const [k, v] of Object.entries(params)) {
+			if (v !== undefined && v !== '') qs.set(k, String(v));
+		}
+		const query = qs.toString();
+		return request<TransactionListResponse>(`/transactions${query ? `?${query}` : ''}`);
+	},
+
+	createTransaction: (payload: {
+		account_id: string;
+		category_id?: string | null;
+		amount: string;
+		direction: 'inflow' | 'outflow';
+		occurred_at: string;
+		merchant: string;
+		description?: string;
+		notes?: string;
+		is_transfer?: boolean;
+		transfer_account_id?: string | null;
+	}) => request<Transaction>('/transactions', { method: 'POST', body: JSON.stringify(payload) }),
+
+	updateTransaction: (
+		id: string,
+		payload: Partial<{
+			category_id: string | null;
+			merchant_clean: string;
+			notes: string;
+			amount: string;
+			direction: 'inflow' | 'outflow';
+		}>
+	) => request<Transaction>(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+	deleteTransaction: (id: string) => request<void>(`/transactions/${id}`, { method: 'DELETE' }),
+
+	// AI Ingestion & HITL Review
+	listImportBatches: () => request<ImportBatch[]>('/imports'),
+	getImportBatch: (id: string) => request<ImportBatchDetail>(`/imports/${id}`),
+
+	uploadDocument: (accountId: string, file: File) => {
+		const form = new FormData();
+		form.append('account_id', accountId);
+		form.append('file', file);
+		return request<ImportBatchDetail>('/imports/upload', {
+			method: 'POST',
+			body: form
+		});
+	},
+
+	commitImportBatch: (
+		batchId: string,
+		payload: {
+			decisions: Array<{
+				staged_id: string;
+				user_approved: boolean;
+				merchant_clean?: string;
+				category_id?: string | null;
+			}>;
+			skip_duplicates: boolean;
+			learn_from_edits: boolean;
+		}
+	) =>
+		request<ImportBatchDetail>(`/imports/${batchId}/commit`, {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+
+	// Phase 3: Budgets
+	getBudgets: (month?: string) =>
+		request<BudgetOverview>(`/budgets${month ? `?month=${month}` : ''}`),
+
+	upsertBudget: (payload: {
+		category_id: string;
+		amount: string;
+		period?: BudgetPeriod;
+		rollover?: boolean;
+		alert_threshold_pct?: number;
+	}) => request<BudgetOverview>('/budgets', { method: 'POST', body: JSON.stringify(payload) }),
+
+	apply503020Template: (monthlyIncome: string) =>
+		request<BudgetOverview>('/budgets/apply-50-30-20', {
+			method: 'POST',
+			body: JSON.stringify({ monthly_income: monthlyIncome })
+		}),
+
+	deleteBudget: (id: string) => request<void>(`/budgets/${id}`, { method: 'DELETE' }),
+
+	// Phase 3: Recurring & Subscriptions
+	getRecurring: () => request<RecurringOverview>('/recurring'),
+	detectRecurring: () => request<DetectRecurringResponse>('/recurring/detect', { method: 'POST' }),
+
+	createRecurring: (payload: {
+		merchant_name: string;
+		amount: string;
+		currency?: string;
+		direction?: 'outflow' | 'inflow';
+		cadence: RecurringCadence;
+		next_due_date: string;
+		category_id?: string | null;
+		is_subscription?: boolean;
+	}) => request<RecurringItem>('/recurring', { method: 'POST', body: JSON.stringify(payload) }),
+
+	updateRecurring: (id: string, payload: Partial<RecurringItem>) =>
+		request<RecurringItem>(`/recurring/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+	deleteRecurring: (id: string) => request<void>(`/recurring/${id}`, { method: 'DELETE' }),
+
+	// Phase 3: Net Worth, Goals & Simulators
+	getNetWorth: () => request<NetWorthOverview>('/wealth/net-worth'),
+	captureNetWorthSnapshot: () =>
+		request<NetWorthSnapshot>('/wealth/net-worth/snapshot', { method: 'POST' }),
+
+	listGoals: () => request<FinancialGoal[]>('/wealth/goals'),
+	createGoal: (payload: {
+		name: string;
+		goal_type: GoalType;
+		target_amount: string;
+		current_amount?: string;
+		monthly_contribution?: string;
+		target_date?: string | null;
+		color?: string;
+	}) => request<FinancialGoal>('/wealth/goals', { method: 'POST', body: JSON.stringify(payload) }),
+
+	contributeGoal: (id: string, amount: string) =>
+		request<FinancialGoal>(`/wealth/goals/${id}/contribute`, {
+			method: 'POST',
+			body: JSON.stringify({ amount })
+		}),
+
+	deleteGoal: (id: string) => request<void>(`/wealth/goals/${id}`, { method: 'DELETE' }),
+
+	simulateDebtPayoff: (debts: DebtInput[], extraMonthlyPayment: string) =>
+		request<DebtPayoffComparison>('/wealth/simulate/debt-payoff', {
+			method: 'POST',
+			body: JSON.stringify({ debts, extra_monthly_payment: extraMonthlyPayment })
+		}),
+
+	simulateWhatIf: (payload: {
+		starting_savings: string;
+		monthly_income: string;
+		monthly_expenses: string;
+		income_delta_monthly: string;
+		expense_delta_monthly: string;
+		one_time_impact: string;
+		annual_return_pct: string;
+		horizon_months: number;
+	}) =>
+		request<WhatIfResponse>('/wealth/simulate/what-if', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		})
+};
