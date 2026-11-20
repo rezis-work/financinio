@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     accounts,
+    advisor,
     auth,
     budgets,
     categories,
@@ -22,3 +23,4 @@ api_router.include_router(ingestion.router)
 api_router.include_router(budgets.router)
 api_router.include_router(recurring.router)
 api_router.include_router(wealth.router)
+api_router.include_router(advisor.router)

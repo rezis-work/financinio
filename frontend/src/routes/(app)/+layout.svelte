@@ -22,6 +22,7 @@
 
 	const navItems = [
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
+		{ href: '/advisor', label: 'Luna AI Advisor', icon: Sparkles },
 		{ href: '/accounts', label: 'Accounts', icon: Wallet },
 		{ href: '/transactions', label: 'Transactions', icon: ArrowLeftRight },
 		{ href: '/budgets', label: 'Budgets', icon: PieChart },

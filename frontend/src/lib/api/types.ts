@@ -334,3 +334,58 @@ export interface WhatIfResponse {
 	scenario_runway_months: number | null;
 	points: WhatIfPoint[];
 }
+
+// --- Phase 4: Luna Multi-Agent AI Advisor & Proactive Insights ---
+
+export interface ChatCitation {
+	source: string;
+	label: string;
+}
+
+export interface ChatMessage {
+	id: string;
+	thread_id: string;
+	role: 'user' | 'assistant';
+	content: string;
+	active_agent: string | null;
+	citations: ChatCitation[];
+	pending_action: Record<string, unknown> | null;
+	action_status: 'none' | 'pending' | 'executed' | 'rejected';
+	created_at: string;
+}
+
+export interface ChatThread {
+	id: string;
+	langgraph_thread_id: string;
+	title: string;
+	last_message_at: string;
+	created_at: string;
+}
+
+export interface ChatThreadDetail extends ChatThread {
+	messages: ChatMessage[];
+}
+
+export interface ActionDecisionResponse {
+	message: ChatMessage;
+	executed_result: Record<string, unknown> | null;
+}
+
+export interface UserMemoryItem {
+	id: string;
+	fact: string;
+	category: string;
+	score: number | null;
+}
+
+export interface ProactiveInsight {
+	id: string;
+	insight_type: string;
+	severity: 'info' | 'warning' | 'alert';
+	title: string;
+	summary: string;
+	data: Record<string, unknown>;
+	is_read: boolean;
+	is_dismissed: boolean;
+	created_at: string;
+}

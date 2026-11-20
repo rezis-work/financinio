@@ -1,11 +1,15 @@
 import { env } from '$env/dynamic/public';
 import type {
 	Account,
+	ActionDecisionResponse,
 	AuthTokenResponse,
 	BudgetOverview,
 	BudgetPeriod,
 	CategorizationRule,
 	Category,
+	ChatMessage,
+	ChatThread,
+	ChatThreadDetail,
 	DashboardSummary,
 	DebtInput,
 	DebtPayoffComparison,
@@ -16,6 +20,7 @@ import type {
 	ImportBatchDetail,
 	NetWorthOverview,
 	NetWorthSnapshot,
+	ProactiveInsight,
 	RecurringCadence,
 	RecurringItem,
 	RecurringOverview,
@@ -23,6 +28,7 @@ import type {
 	Transaction,
 	TransactionListResponse,
 	User,
+	UserMemoryItem,
 	WhatIfResponse
 } from './types';
 
@@ -352,5 +358,108 @@ export const api = {
 		request<WhatIfResponse>('/wealth/simulate/what-if', {
 			method: 'POST',
 			body: JSON.stringify(payload)
-		})
+		}),
+
+	// Phase 4: Luna Multi-Agent AI Advisor & Insights
+	listThreads: () => request<ChatThread[]>('/advisor/threads'),
+	createThread: (title?: string) =>
+		request<ChatThread>('/advisor/threads', {
+			method: 'POST',
+			body: JSON.stringify(title ? { title } : {})
+		}),
+	getThread: (threadId: string) => request<ChatThreadDetail>(`/advisor/threads/${threadId}`),
+	deleteThread: (threadId: string) =>
+		request<void>(`/advisor/threads/${threadId}`, { method: 'DELETE' }),
+
+	decideAdvisorAction: (
+		threadId: string,
+		messageId: string,
+		approved: boolean,
+		overrideParams?: Record<string, unknown>
+	) =>
+		request<ActionDecisionResponse>(`/advisor/threads/${threadId}/actions/${messageId}`, {
+			method: 'POST',
+			body: JSON.stringify({ approved, override_params: overrideParams })
+		}),
+
+	listMemories: () => request<UserMemoryItem[]>('/advisor/memories'),
+	addMemory: (fact: string, category = 'preference') =>
+		request<UserMemoryItem>('/advisor/memories', {
+			method: 'POST',
+			body: JSON.stringify({ fact, category })
+		}),
+	deleteMemory: (memoryId: string) =>
+		request<void>(`/advisor/memories/${memoryId}`, { method: 'DELETE' }),
+
+	listInsights: () => request<ProactiveInsight[]>('/advisor/insights'),
+	generateInsights: () =>
+		request<ProactiveInsight[]>('/advisor/insights/generate', { method: 'POST' }),
+	dismissInsight: (insightId: string) =>
+		request<void>(`/advisor/insights/${insightId}/dismiss`, { method: 'PATCH' }),
+
+	streamAdvisorMessage: async (
+		threadId: string,
+		message: string,
+		handlers: {
+			onStatus?: (label: string, node: string) => void;
+			onToken?: (chunk: string) => void;
+			onActionRequired?: (msg: ChatMessage) => void;
+			onDone?: (msg: ChatMessage) => void;
+			onError?: (detail: string) => void;
+		}
+	): Promise<void> => {
+		let token = getStoredAccessToken();
+		const doFetch = (authTok: string | null) =>
+			fetch(`${API_BASE}/advisor/threads/${threadId}/stream`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(authTok ? { Authorization: `Bearer ${authTok}` } : {})
+				},
+				credentials: 'include',
+				body: JSON.stringify({ message })
+			});
+
+		let res = await doFetch(token);
+		if (res.status === 401) {
+			token = await tryRefreshToken();
+			if (token) res = await doFetch(token);
+		}
+		if (!res.ok || !res.body) {
+			throw new ApiError(res.status, `Stream failed (${res.status})`);
+		}
+
+		const reader = res.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+
+			const parts = buffer.split('\n\n');
+			buffer = parts.pop() || '';
+
+			for (const block of parts) {
+				if (!block.trim()) continue;
+				let evName = 'message';
+				let dataRaw = '{}';
+				for (const line of block.split('\n')) {
+					if (line.startsWith('event:')) evName = line.slice(6).trim();
+					else if (line.startsWith('data:')) dataRaw = line.slice(5).trim();
+				}
+				try {
+					const parsed = JSON.parse(dataRaw);
+					if (evName === 'status') handlers.onStatus?.(parsed.label || '', parsed.node || '');
+					else if (evName === 'token') handlers.onToken?.(parsed.content || '');
+					else if (evName === 'action_required') handlers.onActionRequired?.(parsed.message);
+					else if (evName === 'done') handlers.onDone?.(parsed.message);
+					else if (evName === 'error') handlers.onError?.(parsed.detail || 'Stream error');
+				} catch {
+					// ignore partial JSON
+				}
+			}
+		}
+	}
 };
