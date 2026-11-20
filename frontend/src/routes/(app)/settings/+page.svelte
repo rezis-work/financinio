@@ -1,9 +1,21 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, ApiError } from '$lib/api/client';
+	import { goto } from '$app/navigation';
+	import { api, ApiError, clearTokens } from '$lib/api/client';
 	import { auth } from '$lib/stores/auth.svelte';
-	import type { CategorizationRule, Category, SystemStatus } from '$lib/api/types';
-	import { Plus, Trash2, CheckCircle2, Cpu, Database, Activity } from 'lucide-svelte';
+	import type { AuditLog, CategorizationRule, Category, SystemStatus } from '$lib/api/types';
+	import { formatDate } from '$lib/utils/format';
+	import {
+		Plus,
+		Trash2,
+		CheckCircle2,
+		Cpu,
+		Database,
+		Activity,
+		Download,
+		ShieldAlert,
+		History
+	} from 'lucide-svelte';
 
 	let fullName = $state(auth.user?.full_name || '');
 	let baseCurrency = $state(auth.user?.base_currency || 'USD');
@@ -14,7 +26,9 @@
 	let categories = $state<Category[]>([]);
 	let rules = $state<CategorizationRule[]>([]);
 	let statusInfo = $state<SystemStatus | null>(null);
+	let auditLogs = $state<AuditLog[]>([]);
 	let error = $state<string | null>(null);
+	let exportSuccess = $state<string | null>(null);
 
 	// New rule form
 	let matchPattern = $state('');
@@ -22,18 +36,25 @@
 	let categoryId = $state('');
 	let merchantOverride = $state('');
 
+	// Danger zone delete account
+	let deletePassword = $state('');
+	let deletePhrase = $state('');
+	let deletingAccount = $state(false);
+
 	let catMap = $derived(new Map(categories.map((c) => [c.id, c])));
 
 	onMount(async () => {
 		try {
-			const [cats, rls, sys] = await Promise.all([
+			const [cats, rls, sys, logs] = await Promise.all([
 				api.listCategories(),
 				api.listRules(),
-				api.systemStatus()
+				api.systemStatus(),
+				api.listAuditLogs()
 			]);
 			categories = cats;
 			rules = rls;
 			statusInfo = sys;
+			auditLogs = logs;
 			if (cats.length > 0) categoryId = cats[0].id;
 		} catch (e) {
 			error = e instanceof ApiError ? e.message : 'Failed to load settings';
@@ -82,16 +103,75 @@
 		await api.deleteRule(id);
 		rules = rules.filter((r) => r.id !== id);
 	}
+
+	function triggerDownload(blob: Blob, filename: string) {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	async function handleExportCsv() {
+		error = null;
+		exportSuccess = null;
+		try {
+			const blob = await api.downloadTransactionsCsv();
+			triggerDownload(blob, `financinio_transactions_${new Date().toISOString().slice(0, 10)}.csv`);
+			exportSuccess = 'Transactions CSV downloaded.';
+			auditLogs = await api.listAuditLogs();
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'CSV export failed';
+		}
+	}
+
+	async function handleExportJson() {
+		error = null;
+		exportSuccess = null;
+		try {
+			const data = await api.exportFullBackupJson();
+			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+			triggerDownload(blob, `financinio_backup_${new Date().toISOString().slice(0, 10)}.json`);
+			exportSuccess = 'Full workspace JSON backup downloaded.';
+			auditLogs = await api.listAuditLogs();
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'JSON backup failed';
+		}
+	}
+
+	async function handleDeleteAccount(e: SubmitEvent) {
+		e.preventDefault();
+		deletingAccount = true;
+		error = null;
+		try {
+			await api.deleteMyAccount(deletePassword, deletePhrase);
+			clearTokens();
+			auth.user = null;
+			goto('/login');
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'Account deletion failed';
+		} finally {
+			deletingAccount = false;
+		}
+	}
 </script>
 
 <div class="space-y-6 max-w-4xl">
 	<div>
-		<h1 class="text-2xl font-bold tracking-tight text-white">Settings & AI Rules</h1>
-		<p class="text-sm text-slate-400 mt-0.5">Manage your workspace preferences, deterministic Tier-1 categorization rules, and infrastructure health.</p>
+		<h1 class="text-2xl font-bold tracking-tight text-white">Settings, Privacy & AI Rules</h1>
+		<p class="text-sm text-slate-400 mt-0.5">
+			Manage workspace preferences, Tier-1 rules, data exports, audit logs, and infrastructure health.
+		</p>
 	</div>
 
 	{#if error}
 		<div class="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">{error}</div>
+	{/if}
+	{#if exportSuccess}
+		<div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm flex items-center gap-2">
+			<CheckCircle2 class="w-4 h-4 shrink-0" /> {exportSuccess}
+		</div>
 	{/if}
 
 	<!-- Profile -->
@@ -250,13 +330,94 @@
 					</div>
 				</div>
 				<div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80 space-y-1">
-					<div class="flex items-center gap-2 text-slate-400"><Activity class="w-4 h-4 text-violet-400" /> LangSmith Tracing</div>
+					<div class="flex items-center gap-2 text-slate-400"><Activity class="w-4 h-4 text-violet-400" /> LangSmith & Guardrails</div>
 					<div class="font-semibold text-white">Project: {statusInfo.langsmith_project}</div>
 					<div class="{statusInfo.langsmith_tracing ? 'text-emerald-400' : 'text-slate-400'}">
-						Status: {statusInfo.langsmith_tracing ? 'Tracing Active' : 'Disabled (.env)'}
+						Tracing: {statusInfo.langsmith_tracing ? 'Active (PII Redacted)' : 'Disabled (.env)'}
 					</div>
 				</div>
 			</div>
 		</div>
 	{/if}
+
+	<!-- Data Export & Backup -->
+	<div class="card-surface rounded-2xl p-6 space-y-4">
+		<div>
+			<h2 class="text-base font-semibold text-white">Data Portability & Backups</h2>
+			<p class="text-xs text-slate-400 mt-0.5">Export your entire financial ledger or download a portable JSON archive anytime.</p>
+		</div>
+		<div class="flex flex-wrap gap-3">
+			<button
+				type="button"
+				onclick={handleExportCsv}
+				class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white cursor-pointer"
+			>
+				<Download class="w-4 h-4 text-emerald-400" /> Download Transactions (CSV)
+			</button>
+			<button
+				type="button"
+				onclick={handleExportJson}
+				class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white cursor-pointer"
+			>
+				<Download class="w-4 h-4 text-cyan-400" /> Download Full Backup (JSON)
+			</button>
+		</div>
+	</div>
+
+	<!-- Security Audit Log -->
+	<div class="card-surface rounded-2xl p-6 space-y-3">
+		<div class="flex items-center gap-2">
+			<History class="w-4 h-4 text-slate-400" />
+			<h2 class="text-base font-semibold text-white">Security & Data Audit Log</h2>
+		</div>
+		{#if auditLogs.length === 0}
+			<p class="text-xs text-slate-500">No sensitive activity logged yet. Exports and security actions appear here.</p>
+		{:else}
+			<div class="divide-y divide-slate-800/70 text-xs">
+				{#each auditLogs.slice(0, 12) as log}
+					<div class="py-2 flex items-center justify-between gap-4">
+						<div class="flex items-center gap-2.5">
+							<span class="px-2 py-0.5 rounded bg-slate-800 text-emerald-300 font-mono-num">{log.action}</span>
+							<span class="text-slate-300">{log.resource_type}</span>
+						</div>
+						<span class="text-slate-500 font-mono-num">{formatDate(log.created_at)}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
+
+	<!-- Danger Zone -->
+	<form onsubmit={handleDeleteAccount} class="rounded-2xl p-6 space-y-4 bg-rose-950/20 border border-rose-500/30">
+		<div class="flex items-center gap-2 text-rose-300">
+			<ShieldAlert class="w-5 h-5" />
+			<h2 class="text-base font-semibold">Danger Zone — Permanent Account Deletion</h2>
+		</div>
+		<p class="text-xs text-slate-400">
+			Permanently deletes your account, cascades all Neon Postgres records (accounts, transactions, budgets, goals, chats), and purges all 3 Upstash Vector namespaces. This cannot be undone.
+		</p>
+		<div class="grid sm:grid-cols-2 gap-3">
+			<input
+				type="password"
+				required
+				bind:value={deletePassword}
+				placeholder="Confirm your password"
+				class="px-3.5 py-2 rounded-xl bg-slate-950 border border-rose-500/30 text-xs text-white"
+			/>
+			<input
+				type="text"
+				required
+				bind:value={deletePhrase}
+				placeholder='Type "DELETE MY ACCOUNT"'
+				class="px-3.5 py-2 rounded-xl bg-slate-950 border border-rose-500/30 text-xs text-white"
+			/>
+		</div>
+		<button
+			type="submit"
+			disabled={deletingAccount}
+			class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
+		>
+			{deletingAccount ? 'Deleting...' : 'Permanently Delete My Account & Vector Memory'}
+		</button>
+	</form>
 </div>

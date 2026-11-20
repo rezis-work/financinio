@@ -389,3 +389,15 @@ export interface ProactiveInsight {
 	is_dismissed: boolean;
 	created_at: string;
 }
+
+// --- Phase 5: Audit Logs & Privacy ---
+
+export interface AuditLog {
+	id: string;
+	action: string;
+	resource_type: string;
+	resource_id: string | null;
+	ip_address: string | null;
+	details: Record<string, unknown>;
+	created_at: string;
+}

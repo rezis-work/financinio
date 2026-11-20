@@ -1,0 +1,211 @@
+"""Financinio Automated Evaluation Suite (Offline + LangSmith Dataset Sync).
+
+Run locally:
+    cd backend && uv run python -m app.ai.evals.run_evals
+
+Run and upload golden dataset & scores to LangSmith (requires LANGCHAIN_API_KEY):
+    cd backend && uv run python -m app.ai.evals.run_evals --langsmith
+"""
+
+import argparse
+import asyncio
+from dataclasses import dataclass
+from decimal import Decimal
+
+from app.ai.graphs.advisor_graph import _heuristic_route
+from app.ai.graphs.ingestion_graph import _heuristic_categorize
+from app.ai.observability import redact_pii
+from app.ai.parsers.tabular import parse_tabular_statement
+from app.schemas.planning import DebtInput, DebtPayoffRequest
+from app.services.auth_service import DEFAULT_CATEGORIES
+from app.services.planning_service import simulate_debt_payoff
+
+
+@dataclass
+class EvalSuiteResult:
+    suite: str
+    passed: int
+    total: int
+    details: list[str]
+
+    @property
+    def score(self) -> float:
+        return round((self.passed / self.total) * 100.0, 1) if self.total else 0.0
+
+
+CATEGORIZATION_GOLDEN: list[tuple[str, str, str]] = [
+    ("AMZN MKTP US*1A2B3C", "outflow", "Shopping & Retail"),
+    ("SQ *BLUE BOTTLE COFFEE", "outflow", "Dining & Coffee"),
+    ("WHOLE FOODS MARKET #1042", "outflow", "Groceries"),
+    ("NETFLIX.COM", "outflow", "Subscriptions & Software"),
+    ("GUSTO PAYROLL DEPOSIT", "inflow", "Salary & Payroll"),
+    ("SHELL OIL 57442", "outflow", "Transportation & Transit"),
+    ("CVS PHARMACY #991", "outflow", "Healthcare & Pharmacy"),
+    ("AIRBNB *HMA891", "outflow", "Travel & Lodging"),
+    ("CONEDISON ELECTRIC BILL", "outflow", "Utilities & Internet"),
+    ("SPOTIFY USA", "outflow", "Subscriptions & Software"),
+]
+
+ROUTING_GOLDEN: list[tuple[str, str]] = [
+    ("How much did I spend on coffee this month?", "ledger_analyst"),
+    ("Find my Apple Store receipt from October", "document_rag"),
+    ("Compare Snowball vs Avalanche on my credit card debt", "wealth_strategist"),
+    ("Create a monthly Groceries budget of $500", "action_proposer"),
+    ("Set an Emergency Fund goal of $10000", "action_proposer"),
+    ("Remember that I plan to buy a home in 2027", "document_rag"),
+    ("What if I cut expenses by $200/mo?", "wealth_strategist"),
+    ("What is the 50/30/20 rule?", "general"),
+]
+
+PII_GOLDEN: list[tuple[str, list[str]]] = [
+    ("Card 4532-1111-2222-3333 charged $42", ["4532", "3333"]),
+    ("SSN 123-45-6789 on tax document", ["123-45-6789"]),
+    ("IBAN DE89370400440532013000 wire transfer", ["DE89370400440532013000"]),
+    ("Email receipt to alice.mercer@example.com", ["alice.mercer@example.com"]),
+]
+
+
+async def eval_extraction_reconciliation() -> EvalSuiteResult:
+    csv_cases = [
+        (
+            "US Signed CSV",
+            b"Date,Description,Amount\n2026-10-01,Payroll,4000.00\n2026-10-02,Groceries,-145.50\n2026-10-03,Coffee,(6.25)\n",
+            3,
+            Decimal("3848.25"),
+        ),
+        (
+            "Split Debit/Credit Semicolon CSV",
+            b"Posted Date;Merchant;Debit;Credit\n10/01/2026;Freelance Invoice;;1200,00\n10/02/2026;Cloud Hosting;49,99;\n",
+            2,
+            Decimal("1150.01"),
+        ),
+    ]
+    passed = 0
+    details: list[str] = []
+    for name, raw, expected_rows, expected_net in csv_cases:
+        rows, _ = await parse_tabular_statement(
+            data=raw, doc_type="csv", default_currency="USD", llm=None
+        )
+        net = sum((r.amount if r.direction == "inflow" else -r.amount for r in rows), Decimal("0.00"))
+        ok = len(rows) == expected_rows and net == expected_net
+        if ok:
+            passed += 1
+        else:
+            details.append(f"FAIL {name}: got {len(rows)} rows net={net}, expected {expected_rows} net={expected_net}")
+    return EvalSuiteResult("extraction_reconciliation", passed, len(csv_cases), details)
+
+
+def eval_categorization() -> EvalSuiteResult:
+    cats = {
+        name.lower(): {"id": str(i), "name": name, "kind": kind}
+        for i, (name, kind, _icon, _color) in enumerate(DEFAULT_CATEGORIES)
+    }
+    passed = 0
+    details: list[str] = []
+    for raw, direction, expected in CATEGORIZATION_GOLDEN:
+        cat, _conf = _heuristic_categorize(raw, direction, cats)
+        got = cat["name"] if cat else None
+        if got == expected:
+            passed += 1
+        else:
+            details.append(f"FAIL '{raw}': got={got}, expected={expected}")
+    return EvalSuiteResult("categorization_accuracy", passed, len(CATEGORIZATION_GOLDEN), details)
+
+
+def eval_advisor_routing_and_math() -> EvalSuiteResult:
+    passed = 0
+    details: list[str] = []
+    for query, expected_route in ROUTING_GOLDEN:
+        got = _heuristic_route(query)
+        if got == expected_route:
+            passed += 1
+        else:
+            details.append(f"FAIL route '{query}': got={got}, expected={expected_route}")
+
+    # Deterministic math groundedness check: Avalanche strictly saves interest vs Snowball
+    sim = simulate_debt_payoff(
+        DebtPayoffRequest(
+            debts=[
+                DebtInput(name="Low APR", balance=Decimal("2000"), apr=Decimal("5.0"), min_payment=Decimal("60")),
+                DebtInput(name="High APR", balance=Decimal("7500"), apr=Decimal("24.9"), min_payment=Decimal("200")),
+            ],
+            extra_monthly_payment=Decimal("250"),
+        )
+    )
+    if sim.interest_saved_by_avalanche > 0 and sim.avalanche.months_to_payoff <= sim.snowball.months_to_payoff:
+        passed += 1
+    else:
+        details.append("FAIL math groundedness: Avalanche did not beat Snowball on high-APR larger debt")
+
+    return EvalSuiteResult("advisor_routing_and_math", passed, len(ROUTING_GOLDEN) + 1, details)
+
+
+def eval_pii_redaction() -> EvalSuiteResult:
+    passed = 0
+    details: list[str] = []
+    for text, forbidden_tokens in PII_GOLDEN:
+        redacted = redact_pii(text)
+        if all(tok not in redacted for tok in forbidden_tokens):
+            passed += 1
+        else:
+            details.append(f"FAIL PII leaked in: {redacted}")
+    return EvalSuiteResult("pii_redaction_guardrail", passed, len(PII_GOLDEN), details)
+
+
+async def run_all_evals(sync_langsmith: bool = False) -> list[EvalSuiteResult]:
+    results = [
+        await eval_extraction_reconciliation(),
+        eval_categorization(),
+        eval_advisor_routing_and_math(),
+        eval_pii_redaction(),
+    ]
+
+    if sync_langsmith:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        if not settings.langchain_api_key:
+            print("Skipping LangSmith dataset sync: LANGCHAIN_API_KEY is not set in backend/.env")
+        else:
+            from langsmith import Client
+
+            ls = Client(api_key=settings.langchain_api_key, api_url=settings.langchain_endpoint)
+            ds_name = f"{settings.langchain_project}-golden-routing"
+            existing = list(ls.list_datasets(dataset_name=ds_name))
+            ds = existing[0] if existing else ls.create_dataset(
+                dataset_name=ds_name,
+                description="Financinio Luna Supervisor Routing golden evaluation dataset",
+            )
+            if not existing:
+                ls.create_examples(
+                    inputs=[{"query": q} for q, _ in ROUTING_GOLDEN],
+                    outputs=[{"route": r} for _, r in ROUTING_GOLDEN],
+                    dataset_id=ds.id,
+                )
+            print(f"Synced golden dataset '{ds_name}' to LangSmith (id={ds.id}).")
+
+    return results
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run Financinio AI & Guardrail Evaluations")
+    parser.add_argument("--langsmith", action="store_true", help="Sync golden datasets to LangSmith")
+    args = parser.parse_args()
+
+    results = asyncio.run(run_all_evals(sync_langsmith=args.langsmith))
+    print("\n=== Financinio Evaluation Report ===")
+    all_ok = True
+    for r in results:
+        status = "PASS" if r.score >= 90.0 else "FAIL"
+        if status == "FAIL":
+            all_ok = False
+        print(f"  [{status}] {r.suite:28s} {r.passed}/{r.total} ({r.score}%)")
+        for d in r.details:
+            print(f"         - {d}")
+    print("====================================\n")
+    if not all_ok:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

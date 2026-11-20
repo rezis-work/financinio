@@ -2,10 +2,13 @@
 
 AI-powered Personal Finance & Wealth platform built with **FastAPI**, **SvelteKit**, **Neon Serverless PostgreSQL**, **Upstash Vector**, **LangChain**, **LangGraph**, and **LangSmith**.
 
-## Architecture
+## Features Completed (Phases 1–5)
 
-- **`backend/`**: FastAPI + async SQLAlchemy 2.0 + Alembic + custom rotating JWT auth + pluggable file storage (`local` or S3/Cloudflare R2) + LangChain provider-agnostic LLM factory + LangGraph stateful document ingestion pipeline (with Human-in-the-Loop `interrupt()` review & Neon Postgres checkpointing) + Upstash Vector per-user namespaces (`merchant_memory:{user_id}` and `documents:{user_id}`) + LangSmith tracing.
-- **`frontend/`**: SvelteKit (Svelte 5 + TypeScript + Tailwind CSS v4) with Dashboard, Accounts, Searchable Ledger, Drag-and-Drop AI Statement/Receipt Imports + HITL Review Queue, and Settings/Rules.
+- **Phase 1 — Core Ledger & Auth**: Custom rotating JWT auth, multi-currency Accounts, searchable Transactions with linked internal transfers, default category seeding, and Cash Flow Dashboard.
+- **Phase 2 — AI Document Ingestion**: LangGraph stateful pipeline (`CSV`, `Excel`, `PDF statements`, `Receipt images`) with balance reconciliation, fingerprint deduplication, 3-tier categorization (User Rules → Upstash Vector memory → LLM structured output), and HITL Review Queue (`interrupt()` / `Command(resume=...)`).
+- **Phase 3 — Budgets, Recurring, Net Worth & Goals**: Rollover budgets with real-time month pacing, 50/30/20 setup, automatic recurring bill & subscription price-hike detector, Net Worth snapshots, Financial Goals, and deterministic **Snowball vs. Avalanche** & **What-If** simulators.
+- **Phase 4 — Luna Multi-Agent AI Advisor**: LangGraph Supervisor routing across Ledger Analyst, Document & Memory RAG (Upstash Vector), Wealth Strategist, and HITL Action Agent (Approve/Reject database mutations in SSE streaming chat), plus Proactive Anomaly Detection & Weekly Digest.
+- **Phase 5 — Evals, Hardening & Production Readiness**: Automated LangSmith & offline evaluation suite (`extraction`, `categorization`, `routing/math`, `PII redaction`), sliding-window rate limiting, security headers, Audit Logs, CSV/JSON full data export, GDPR-style account & vector namespace purge, Dark/Light theme toggle, `Dockerfile`, and `render.yaml`.
 
 ---
 
@@ -16,23 +19,12 @@ AI-powered Personal Finance & Wealth platform built with **FastAPI**, **SvelteKi
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env with your Neon DATABASE_URL, Upstash Vector, LLM key, and LangSmith key (optional for local SQLite dev)
 uv sync --python 3.12
-```
-
-Run migrations (when using Neon PostgreSQL):
-
-```bash
 uv run alembic upgrade head
-```
-
-Start the FastAPI server:
-
-```bash
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-API docs will be available at `http://localhost:8000/docs`.
+API docs: `http://localhost:8000/docs`
 
 ### 2. Frontend (SvelteKit)
 
@@ -40,19 +32,27 @@ API docs will be available at `http://localhost:8000/docs`.
 cd frontend
 cp .env.example .env
 pnpm install
-pnpm dev
+pnpm dev --port 5173
 ```
 
-Open `http://localhost:5173`.
+Web app: `http://localhost:5173`
 
 ---
 
-## Running Tests & Checks
+## Tests, Evals & Production Deployment
 
 ```bash
-# Backend pytest suite (Auth, Ledger, Transfers, Dashboard, LangGraph HITL Ingestion + Vector Learning)
-cd backend && uv run pytest -v
+# Backend lint + integration tests (10 suites)
+cd backend && uv run ruff check app tests && uv run pytest -v
 
-# Frontend TypeScript & Svelte checks + production build
+# AI & Guardrail Evaluation Suite (offline or synced to LangSmith)
+cd backend && uv run python -m app.ai.evals.run_evals
+cd backend && uv run python -m app.ai.evals.run_evals --langsmith
+
+# Frontend typecheck + production build
 cd frontend && pnpm check && pnpm build
 ```
+
+### Deployment
+- **Backend**: Deploy `backend/Dockerfile` to Render (`render.yaml` included), Fly.io, or Railway with your Neon, Upstash Vector, OpenAI/Gemini, and LangSmith env vars.
+- **Frontend**: Deploy `frontend/` to Vercel or Cloudflare Pages setting `PUBLIC_API_URL=https://your-api-domain/api/v1`.

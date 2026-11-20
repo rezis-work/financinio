@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/public';
 import type {
 	Account,
 	ActionDecisionResponse,
+	AuditLog,
 	AuthTokenResponse,
 	BudgetOverview,
 	BudgetPeriod,
@@ -461,5 +462,26 @@ export const api = {
 				}
 			}
 		}
-	}
+	},
+
+	// Phase 5: Data Export, Audit Logs & Account Deletion
+	listAuditLogs: () => request<AuditLog[]>('/data/audit-logs'),
+
+	downloadTransactionsCsv: async () => {
+		const token = getStoredAccessToken();
+		const res = await fetch(`${API_BASE}/data/export/csv`, {
+			headers: token ? { Authorization: `Bearer ${token}` } : {},
+			credentials: 'include'
+		});
+		if (!res.ok) throw new ApiError(res.status, 'CSV export failed');
+		return res.blob();
+	},
+
+	exportFullBackupJson: () => request<Record<string, unknown>>('/data/export/json'),
+
+	deleteMyAccount: (password: string, confirmPhrase: string) =>
+		request<void>('/data/account', {
+			method: 'DELETE',
+			body: JSON.stringify({ password, confirm_phrase: confirmPhrase })
+		})
 };

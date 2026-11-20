@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { theme } from '$lib/stores/theme.svelte';
 	import {
 		LayoutDashboard,
 		Wallet,
@@ -13,6 +14,8 @@
 		Settings,
 		LogOut,
 		Sparkles,
+		Sun,
+		Moon,
 		Menu,
 		X
 	} from 'lucide-svelte';
@@ -84,10 +87,25 @@
 				</nav>
 			</div>
 
-			<div class="pt-4 border-t border-slate-800/80 space-y-3">
-				<div class="px-2">
-					<div class="text-sm font-medium text-white truncate">{auth.user.full_name}</div>
-					<div class="text-xs text-slate-400 truncate">{auth.user.email}</div>
+			<div class="pt-4 border-t border-slate-800/80 space-y-2.5">
+				<div class="px-2 flex items-center justify-between gap-2">
+					<div class="min-w-0">
+						<div class="text-sm font-medium text-white truncate">{auth.user.full_name}</div>
+						<div class="text-xs text-slate-400 truncate">{auth.user.email}</div>
+					</div>
+					<button
+						type="button"
+						onclick={() => theme.toggle()}
+						class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 transition cursor-pointer shrink-0"
+						title="Toggle Dark / Light Theme"
+						aria-label="Toggle Dark / Light Theme"
+					>
+						{#if theme.mode === 'dark'}
+							<Sun class="w-4 h-4" />
+						{:else}
+							<Moon class="w-4 h-4" />
+						{/if}
+					</button>
 				</div>
 				<button
 					type="button"

@@ -1,14 +1,28 @@
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.ai.checkpointer import checkpointer_manager
 from app.ai.observability import configure_langsmith_env
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.database import engine
+from app.core.rate_limit import RateLimitMiddleware
 from app.models import Base
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID") or uuid4().hex[:16]
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
 
 @asynccontextmanager
@@ -32,11 +46,13 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title=f"{settings.app_name} API",
-        version="0.1.0",
+        version="0.2.0",
         description="AI-powered Personal Finance & Wealth platform (FastAPI + LangChain + LangGraph + LangSmith)",
         lifespan=lifespan,
     )
 
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,

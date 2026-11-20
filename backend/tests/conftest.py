@@ -107,6 +107,12 @@ class InMemoryVectorService:
     async def delete_user_fact(self, user_id: UUID, fact_id: str) -> None:
         self.user_facts.get(str(user_id), {}).pop(fact_id, None)
 
+    async def purge_user_namespaces(self, user_id: UUID) -> None:
+        uid = str(user_id)
+        self.user_facts.pop(uid, None)
+        self.merchant_memory = {k: v for k, v in self.merchant_memory.items() if k[0] != uid}
+        self.document_chunks = [c for c in self.document_chunks if c["user_id"] != uid]
+
 
 @pytest_asyncio.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:

@@ -72,6 +72,8 @@ class VectorMemoryBackend(Protocol):
 
     async def delete_user_fact(self, user_id: UUID, fact_id: str) -> None: ...
 
+    async def purge_user_namespaces(self, user_id: UUID) -> None: ...
+
 
 class UpstashVectorService:
     """Tenant-isolated Upstash Vector service using per-user namespaces.
@@ -326,6 +328,20 @@ class UpstashVectorService:
             )
         except Exception as exc:  # pragma: no cover
             logger.warning("Upstash Vector delete_user_fact failed: %s", exc)
+
+    async def purge_user_namespaces(self, user_id: UUID) -> None:
+        """Delete all tenant-scoped Upstash Vector namespaces for GDPR-style account deletion."""
+        if not self.enabled:
+            return
+        for ns in (
+            self._merchant_ns(user_id),
+            self._document_ns(user_id),
+            self._user_memory_ns(user_id),
+        ):
+            try:
+                await self._index.delete_namespace(ns)  # type: ignore[union-attr]
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Upstash Vector purge namespace %s failed: %s", ns, exc)
 
 
 _vector_service_singleton: UpstashVectorService | None = None
