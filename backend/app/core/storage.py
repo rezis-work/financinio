@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -49,7 +50,7 @@ class LocalDiskStorage:
 
 
 class S3CompatibleStorage:
-    """S3 / Cloudflare R2 adapter placeholder ready for production boto3/aioboto3 wiring."""
+    """Async-safe S3-compatible object storage adapter (Fly.io Tigris / AWS S3 / Cloudflare R2)."""
 
     def __init__(
         self,
@@ -64,46 +65,67 @@ class S3CompatibleStorage:
         self.region = region
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
+        self._cached_client = None
 
     def _client(self):
+        if self._cached_client is not None:
+            return self._cached_client
         try:
-            import boto3  # type: ignore[import-not-found]
+            import boto3
+            from botocore.config import Config
         except ImportError as exc:
             raise RuntimeError(
                 "STORAGE_BACKEND=s3 requires boto3 (`uv add boto3`)."
             ) from exc
-        return boto3.client(
+        self._cached_client = boto3.client(
             "s3",
             endpoint_url=self.endpoint_url,
             region_name=self.region,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
+            config=Config(s3={"addressing_style": "virtual"}),
         )
+        return self._cached_client
 
     async def save(self, user_id: UUID, filename: str, data: bytes) -> str:
         safe_name = Path(filename).name.replace(" ", "_")
         key = f"users/{user_id}/{uuid4().hex}_{safe_name}"
-        self._client().put_object(Bucket=self.bucket, Key=key, Body=data)
+        await asyncio.to_thread(
+            self._client().put_object,
+            Bucket=self.bucket,
+            Key=key,
+            Body=data,
+        )
         return key
 
     async def load(self, storage_key: str) -> bytes:
-        obj = self._client().get_object(Bucket=self.bucket, Key=storage_key)
-        return obj["Body"].read()
+        def _get() -> bytes:
+            obj = self._client().get_object(Bucket=self.bucket, Key=storage_key)
+            return obj["Body"].read()
+
+        return await asyncio.to_thread(_get)
 
     async def delete(self, storage_key: str) -> None:
-        self._client().delete_object(Bucket=self.bucket, Key=storage_key)
+        await asyncio.to_thread(
+            self._client().delete_object,
+            Bucket=self.bucket,
+            Key=storage_key,
+        )
 
 
 def get_storage() -> StorageBackend:
     settings = get_settings()
     if settings.storage_backend == "s3":
-        if not settings.s3_bucket:
-            raise RuntimeError("S3_BUCKET must be configured when STORAGE_BACKEND=s3")
+        bucket = settings.resolved_s3_bucket
+        if not bucket:
+            raise RuntimeError(
+                "S3_BUCKET or BUCKET_NAME (Tigris) must be configured when STORAGE_BACKEND=s3"
+            )
         return S3CompatibleStorage(
-            bucket=settings.s3_bucket,
-            endpoint_url=settings.s3_endpoint_url,
-            region=settings.s3_region,
-            access_key_id=settings.s3_access_key_id,
-            secret_access_key=settings.s3_secret_access_key,
+            bucket=bucket,
+            endpoint_url=settings.resolved_s3_endpoint,
+            region=settings.resolved_s3_region,
+            access_key_id=settings.resolved_s3_access_key,
+            secret_access_key=settings.resolved_s3_secret_key,
         )
     return LocalDiskStorage(settings.local_storage_dir)

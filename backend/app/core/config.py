@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
 
-    # Pluggable File Storage
+    # Pluggable File Storage (LocalDisk or S3 / Fly Tigris / Cloudflare R2)
     storage_backend: Literal["local", "s3"] = "local"
     local_storage_dir: str = "./uploads"
     s3_bucket: str | None = None
@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     s3_region: str = "auto"
     s3_access_key_id: str | None = None
     s3_secret_access_key: str | None = None
+    # Fly.io Tigris auto-injected S3 environment variables
+    bucket_name: str | None = None
+    aws_endpoint_url_s3: str | None = None
+    aws_region: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
 
     # Upstash Vector
     upstash_vector_rest_url: str | None = None
@@ -77,6 +83,26 @@ class Settings(BaseSettings):
         if self.llm_provider == "anthropic":
             return bool(self.anthropic_api_key)
         return False
+
+    @property
+    def resolved_s3_bucket(self) -> str | None:
+        return self.s3_bucket or self.bucket_name
+
+    @property
+    def resolved_s3_endpoint(self) -> str | None:
+        return self.s3_endpoint_url or self.aws_endpoint_url_s3
+
+    @property
+    def resolved_s3_region(self) -> str:
+        return self.aws_region or self.s3_region or "auto"
+
+    @property
+    def resolved_s3_access_key(self) -> str | None:
+        return self.s3_access_key_id or self.aws_access_key_id
+
+    @property
+    def resolved_s3_secret_key(self) -> str | None:
+        return self.s3_secret_access_key or self.aws_secret_access_key
 
     @property
     def langsmith_configured(self) -> bool:
