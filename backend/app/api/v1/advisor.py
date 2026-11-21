@@ -31,6 +31,11 @@ from app.schemas.advisor import (
     UserMemoryItem,
 )
 from app.services.insights_service import generate_proactive_insights
+from app.services.quota_service import (
+    TokenMeterCallbackHandler,
+    enforce_ai_quota,
+    record_ai_usage,
+)
 from app.services.vector_service import VectorMemoryBackend
 
 router = APIRouter(prefix="/advisor", tags=["Luna AI Financial Advisor"])
@@ -138,6 +143,8 @@ async def stream_advisor_reply(
     if thread is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat thread not found.")
 
+    enforce_ai_quota(current_user)
+
     user_text = payload.message.strip()
     user_msg = ChatMessage(
         thread_id=thread.id,
@@ -157,11 +164,13 @@ async def stream_advisor_reply(
         checkpointer=checkpointer_manager.saver,
         vector_service=vector_service,
     )
+    token_meter = TokenMeterCallbackHandler()
     lg_config = build_langgraph_config(
         thread_id=thread.langgraph_thread_id,
         user_id=current_user.id,
         feature="advisor",
         extra_metadata={"chat_thread_id": str(thread.id)},
+        extra_callbacks=[token_meter],
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
@@ -226,6 +235,17 @@ async def stream_advisor_reply(
                 await db.commit()
                 await db.refresh(assistant_msg)
 
+                await record_ai_usage(
+                    db,
+                    user=current_user,
+                    feature="advisor_chat",
+                    prompt_tokens=token_meter.prompt_tokens,
+                    completion_tokens=token_meter.completion_tokens,
+                    total_tokens=token_meter.total_tokens,
+                    model_name=token_meter.model_name,
+                    fallback_text=f"{user_text} {summary}",
+                )
+
                 msg_dto = ChatMessageResponse.model_validate(assistant_msg).model_dump(mode="json")
                 yield _sse_event("action_required", {"message": msg_dto})
                 yield _sse_event("done", {"message": msg_dto})
@@ -254,6 +274,17 @@ async def stream_advisor_reply(
             thread.last_message_at = utcnow()
             await db.commit()
             await db.refresh(assistant_msg)
+
+            await record_ai_usage(
+                db,
+                user=current_user,
+                feature="advisor_chat",
+                prompt_tokens=token_meter.prompt_tokens,
+                completion_tokens=token_meter.completion_tokens,
+                total_tokens=token_meter.total_tokens,
+                model_name=token_meter.model_name,
+                fallback_text=f"{user_text} {final_content}",
+            )
 
             msg_dto = ChatMessageResponse.model_validate(assistant_msg).model_dump(mode="json")
             yield _sse_event("done", {"message": msg_dto})
@@ -419,7 +450,17 @@ async def trigger_insights_generation(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProactiveInsightResponse]:
+    enforce_ai_quota(current_user)
     created = await generate_proactive_insights(db, current_user)
+    digest_text = " ".join(i.summary for i in created[:2])
+    await record_ai_usage(
+        db,
+        user=current_user,
+        feature="proactive_insights",
+        prompt_tokens=0,
+        completion_tokens=0,
+        fallback_text=digest_text,
+    )
     return [ProactiveInsightResponse.model_validate(r) for r in created]
 
 

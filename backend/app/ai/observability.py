@@ -74,6 +74,7 @@ def build_langgraph_config(
     user_id: UUID | str,
     feature: str,
     extra_metadata: dict | None = None,
+    extra_callbacks: list[Any] | None = None,
 ) -> RunnableConfig:
     """Construct a LangGraph RunnableConfig with LangSmith tags, PII redaction & pseudonymized user hash."""
     settings = get_settings()
@@ -93,10 +94,11 @@ def build_langgraph_config(
         f"feature:{feature}",
         f"provider:{settings.llm_provider}",
     ]
+    callbacks: list[Any] = [PIIRedactingCallbackHandler(), *(extra_callbacks or [])]
     return RunnableConfig(
         configurable={"thread_id": thread_id},
         tags=tags,
         metadata=metadata,
-        callbacks=[PIIRedactingCallbackHandler()],
+        callbacks=callbacks,
         run_name=f"financinio.{feature}",
     )

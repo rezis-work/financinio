@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -75,6 +76,7 @@ async def issue_tokens(db: AsyncSession, user: User) -> AuthTokenResponse:
 
 
 async def register_user(db: AsyncSession, payload: RegisterRequest) -> AuthTokenResponse:
+    settings = get_settings()
     normalized_email = payload.email.lower().strip()
     existing = await db.scalar(select(User).where(User.email == normalized_email))
     if existing is not None:
@@ -83,11 +85,17 @@ async def register_user(db: AsyncSession, payload: RegisterRequest) -> AuthToken
             detail="An account with this email already exists.",
         )
 
+    is_bootstrap_admin = normalized_email in settings.admin_email_set
     user = User(
         email=normalized_email,
         password_hash=hash_password(payload.password),
         full_name=payload.full_name.strip(),
         base_currency=payload.base_currency.upper(),
+        role="admin" if is_bootstrap_admin else "user",
+        is_active=True,
+        ai_token_limit=settings.default_user_ai_token_limit,
+        ai_tokens_used=0,
+        has_unlimited_ai=is_bootstrap_admin,
     )
     db.add(user)
     await db.flush()
@@ -96,6 +104,7 @@ async def register_user(db: AsyncSession, payload: RegisterRequest) -> AuthToken
 
 
 async def login_user(db: AsyncSession, payload: LoginRequest) -> AuthTokenResponse:
+    settings = get_settings()
     normalized_email = payload.email.lower().strip()
     user = await db.scalar(select(User).where(User.email == normalized_email))
     if user is None or not verify_password(payload.password, user.password_hash):
@@ -103,6 +112,16 @@ async def login_user(db: AsyncSession, payload: LoginRequest) -> AuthTokenRespon
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been suspended by an administrator.",
+        )
+    if normalized_email in settings.admin_email_set and (
+        user.role != "admin" or not user.has_unlimited_ai
+    ):
+        user.role = "admin"
+        user.has_unlimited_ai = True
     return await issue_tokens(db, user)
 
 

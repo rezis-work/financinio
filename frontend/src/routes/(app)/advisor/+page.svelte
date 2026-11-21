@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api/client';
+	import { auth } from '$lib/stores/auth.svelte';
 	import type {
 		ChatMessage,
 		ChatThread,
@@ -164,8 +165,12 @@
 				}
 			});
 
-			// Refresh threads & memories in case title updated or memory saved
-			const [ths, mems] = await Promise.all([api.listThreads(), api.listMemories()]);
+			// Refresh threads, memories & live AI token meter
+			const [ths, mems] = await Promise.all([
+				api.listThreads(),
+				api.listMemories(),
+				auth.hydrate()
+			]);
 			threads = ths;
 			memories = mems;
 		} catch (err) {

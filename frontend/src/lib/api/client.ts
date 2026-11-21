@@ -2,6 +2,9 @@ import { env } from '$env/dynamic/public';
 import type {
 	Account,
 	ActionDecisionResponse,
+	AdminOverview,
+	AdminUserSummary,
+	AIUsageEvent,
 	AuditLog,
 	AuthTokenResponse,
 	BudgetOverview,
@@ -427,7 +430,14 @@ export const api = {
 			if (token) res = await doFetch(token);
 		}
 		if (!res.ok || !res.body) {
-			throw new ApiError(res.status, `Stream failed (${res.status})`);
+			let detail = `Stream failed (${res.status})`;
+			try {
+				const errBody = await res.json();
+				if (typeof errBody.detail === 'string') detail = errBody.detail;
+			} catch {
+				// ignore
+			}
+			throw new ApiError(res.status, detail);
 		}
 
 		const reader = res.body.getReader();
@@ -483,5 +493,33 @@ export const api = {
 		request<void>('/data/account', {
 			method: 'DELETE',
 			body: JSON.stringify({ password, confirm_phrase: confirmPhrase })
-		})
+		}),
+
+	// Admin Dashboard & User AI Quotas
+	adminOverview: () => request<AdminOverview>('/admin/overview'),
+
+	adminListUsers: (params: { search?: string; tier?: string } = {}) => {
+		const qs = new URLSearchParams();
+		if (params.search) qs.set('search', params.search);
+		if (params.tier && params.tier !== 'all') qs.set('tier', params.tier);
+		const q = qs.toString();
+		return request<AdminUserSummary[]>(`/admin/users${q ? `?${q}` : ''}`);
+	},
+
+	adminUpdateUserAccess: (
+		userId: string,
+		payload: {
+			has_unlimited_ai?: boolean;
+			ai_token_limit?: number;
+			reset_tokens_used?: boolean;
+			role?: 'user' | 'admin';
+			is_active?: boolean;
+		}
+	) =>
+		request<AdminUserSummary>(`/admin/users/${userId}/access`, {
+			method: 'PATCH',
+			body: JSON.stringify(payload)
+		}),
+
+	adminUserUsage: (userId: string) => request<AIUsageEvent[]>(`/admin/users/${userId}/usage`)
 };

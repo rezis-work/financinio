@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     account_data,
     accounts,
+    admin,
     advisor,
     auth,
     budgets,
@@ -26,3 +27,4 @@ api_router.include_router(recurring.router)
 api_router.include_router(wealth.router)
 api_router.include_router(advisor.router)
 api_router.include_router(account_data.router)
+api_router.include_router(admin.router)

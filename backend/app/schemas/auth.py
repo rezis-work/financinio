@@ -34,6 +34,11 @@ class UserResponse(BaseModel):
     full_name: str
     base_currency: str
     fiscal_start_day: int
+    role: str
+    is_active: bool
+    ai_token_limit: int
+    ai_tokens_used: int
+    has_unlimited_ai: bool
     created_at: datetime
 
 

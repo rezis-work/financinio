@@ -28,6 +28,11 @@ from app.schemas.ingestion import (
     StagedTransactionResponse,
 )
 from app.services.ledger_service import compute_transaction_fingerprint, recalculate_account_balance
+from app.services.quota_service import (
+    TokenMeterCallbackHandler,
+    enforce_ai_quota,
+    record_ai_usage,
+)
 from app.services.vector_service import VectorMemoryBackend
 
 router = APIRouter(prefix="/imports", tags=["AI Document Ingestion"])
@@ -143,6 +148,8 @@ async def upload_and_parse_document(
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target account not found.")
 
+    enforce_ai_quota(current_user)
+
     raw_bytes = await file.read()
     if not raw_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
@@ -210,11 +217,13 @@ async def upload_and_parse_document(
         checkpointer=checkpointer_manager.saver,
         vector_service=vector_service,
     )
+    token_meter = TokenMeterCallbackHandler()
     lg_config = build_langgraph_config(
         thread_id=thread_id,
         user_id=current_user.id,
         feature="ingestion",
         extra_metadata={"doc_type": doc_type, "batch_id": str(batch.id)},
+        extra_callbacks=[token_meter],
     )
 
     try:
@@ -306,6 +315,17 @@ async def upload_and_parse_document(
     batch.reconciliation_note = result.get("reconciliation_note")
 
     await db.commit()
+
+    if token_meter.total_tokens > 0:
+        await record_ai_usage(
+            db,
+            user=current_user,
+            feature="document_ingestion",
+            prompt_tokens=token_meter.prompt_tokens,
+            completion_tokens=token_meter.completion_tokens,
+            total_tokens=token_meter.total_tokens,
+            model_name=token_meter.model_name,
+        )
 
     # Reload with relationships
     return await get_import_batch(batch.id, current_user=current_user, db=db)

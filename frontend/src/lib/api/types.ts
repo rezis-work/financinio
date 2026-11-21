@@ -4,6 +4,11 @@ export interface User {
 	full_name: string;
 	base_currency: string;
 	fiscal_start_day: number;
+	role: 'user' | 'admin';
+	is_active: boolean;
+	ai_token_limit: number;
+	ai_tokens_used: number;
+	has_unlimited_ai: boolean;
 	created_at: string;
 }
 
@@ -400,4 +405,48 @@ export interface AuditLog {
 	ip_address: string | null;
 	details: Record<string, unknown>;
 	created_at: string;
+}
+
+// --- Admin Dashboard & AI Token Quotas ---
+
+export interface AdminUserSummary {
+	id: string;
+	email: string;
+	full_name: string;
+	base_currency: string;
+	role: 'user' | 'admin';
+	is_active: boolean;
+	ai_token_limit: number;
+	ai_tokens_used: number;
+	has_unlimited_ai: boolean;
+	accounts_count: number;
+	transactions_count: number;
+	created_at: string;
+}
+
+export interface AIUsageEvent {
+	id: string;
+	user_id: string;
+	user_email: string | null;
+	feature: string;
+	provider: string;
+	model: string;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	created_at: string;
+}
+
+export interface AdminOverview {
+	total_users: number;
+	active_users: number;
+	admin_users: number;
+	unlimited_users: number;
+	suspended_users: number;
+	total_ai_tokens_used: number;
+	tokens_used_last_7d: number;
+	total_accounts: number;
+	total_transactions: number;
+	default_token_limit: number;
+	recent_ai_usage: AIUsageEvent[];
 }

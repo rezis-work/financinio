@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     langchain_api_key: str | None = Field(default=None, alias="LANGCHAIN_API_KEY")
     langchain_project: str = Field(default="financinio-dev", alias="LANGCHAIN_PROJECT")
 
+    # Admin & AI Token Quotas
+    admin_emails: str = ""
+    default_user_ai_token_limit: int = 50_000
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

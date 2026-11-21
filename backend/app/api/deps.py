@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.core.storage import StorageBackend, get_storage
@@ -38,7 +39,33 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found.",
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been suspended by an administrator.",
+        )
+
+    settings = get_settings()
+    if user.email.lower() in settings.admin_email_set and (
+        user.role != "admin" or not user.has_unlimited_ai
+    ):
+        user.role = "admin"
+        user.has_unlimited_ai = True
+        await db.commit()
+        await db.refresh(user)
+
     return user
+
+
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return current_user
 
 
 def get_storage_dep() -> StorageBackend:
