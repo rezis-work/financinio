@@ -1,0 +1,68 @@
+name: CI — Tests, Evals & Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (Lint, Pytest & AI Evals)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12 & dependencies
+        run: uv sync --python 3.12 --frozen
+
+      - name: Lint with Ruff
+        run: uv run ruff check app tests
+
+      - name: Run AI & PII Guardrail Evaluation Suite
+        env:
+          APP_ENV: test
+        run: uv run python -m app.ai.evals.run_evals
+
+      - name: Run Pytest Suite
+        env:
+          APP_ENV: test
+        run: uv run pytest -v
+
+  frontend:
+    name: Frontend (Svelte Check & Production Build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck & Svelte diagnostics
+        run: pnpm check
+
+      - name: Production build
+        env:
+          PUBLIC_API_URL: https://financinio-api.fly.dev/api/v1
+        run: pnpm build

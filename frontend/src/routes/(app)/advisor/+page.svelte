@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api/client';
 	import type {
 		ChatMessage,
@@ -65,7 +67,13 @@
 			threads = ths;
 			insights = ins;
 			memories = mems;
-			if (ths.length > 0) {
+
+			const initialQuery = page.url.searchParams.get('q');
+			if (initialQuery && initialQuery.trim()) {
+				await createNewThread();
+				goto('/advisor', { replaceState: true });
+				await sendMessage(initialQuery.trim());
+			} else if (ths.length > 0) {
 				await selectThread(ths[0].id);
 			}
 		} catch (e) {

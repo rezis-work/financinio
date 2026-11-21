@@ -1,0 +1,18 @@
+{
+  "name": "Financinio — AI Personal Finance & Wealth",
+  "short_name": "Financinio",
+  "description": "AI-powered personal finance, budgets, net worth, statement ingestion, and Luna financial advisor.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

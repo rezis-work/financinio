@@ -11,6 +11,7 @@
 	} from '$lib/api/types';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { formatDate, formatMoney } from '$lib/utils/format';
+	import LineChart from '$lib/components/LineChart.svelte';
 	import {
 		Target,
 		TrendingUp,
@@ -180,6 +181,81 @@
 		if (debts.length <= 1) return;
 		debts = debts.filter((_, i) => i !== idx);
 	}
+
+	let netWorthChart = $derived.by(() => {
+		if (!netWorth || netWorth.snapshots.length === 0) return null;
+		return {
+			labels: netWorth.snapshots.map((s) => formatDate(s.snapshot_date)),
+			series: [
+				{
+					name: 'Net Worth',
+					color: '#34d399',
+					values: netWorth.snapshots.map((s) => Number.parseFloat(s.net_worth))
+				},
+				{
+					name: 'Assets',
+					color: '#22d3ee',
+					dashed: true,
+					values: netWorth.snapshots.map((s) => Number.parseFloat(s.total_assets))
+				},
+				{
+					name: 'Liabilities',
+					color: '#fb7185',
+					dashed: true,
+					values: netWorth.snapshots.map((s) => Number.parseFloat(s.total_liabilities))
+				}
+			]
+		};
+	});
+
+	let debtChart = $derived.by(() => {
+		if (!debtResult) return null;
+		const monthSet = new Set<number>();
+		for (const p of debtResult.snowball.monthly_balance_curve) monthSet.add(p.month);
+		for (const p of debtResult.avalanche.monthly_balance_curve) monthSet.add(p.month);
+		const months = [...monthSet].sort((a, b) => a - b);
+		const snowMap = new Map(debtResult.snowball.monthly_balance_curve.map((p) => [p.month, p.total_balance]));
+		const avalMap = new Map(debtResult.avalanche.monthly_balance_curve.map((p) => [p.month, p.total_balance]));
+		let lastSnow = debtResult.snowball.monthly_balance_curve[0]?.total_balance ?? 0;
+		let lastAval = debtResult.avalanche.monthly_balance_curve[0]?.total_balance ?? 0;
+		const snowVals: number[] = [];
+		const avalVals: number[] = [];
+		for (const m of months) {
+			if (snowMap.has(m)) lastSnow = snowMap.get(m)!;
+			else if (m > debtResult.snowball.months_to_payoff) lastSnow = 0;
+			if (avalMap.has(m)) lastAval = avalMap.get(m)!;
+			else if (m > debtResult.avalanche.months_to_payoff) lastAval = 0;
+			snowVals.push(lastSnow);
+			avalVals.push(lastAval);
+		}
+		return {
+			labels: months.map((m) => (m === 0 ? 'Now' : `Mo ${m}`)),
+			series: [
+				{ name: 'Avalanche', color: '#34d399', values: avalVals },
+				{ name: 'Snowball', color: '#22d3ee', dashed: true, values: snowVals }
+			]
+		};
+	});
+
+	let whatIfChart = $derived.by(() => {
+		if (!whatIfResult) return null;
+		return {
+			labels: whatIfResult.points.map((p) => p.label),
+			series: [
+				{
+					name: 'What-If Scenario',
+					color: '#34d399',
+					values: whatIfResult.points.map((p) => Number.parseFloat(p.scenario_balance))
+				},
+				{
+					name: 'Baseline',
+					color: '#94a3b8',
+					dashed: true,
+					values: whatIfResult.points.map((p) => Number.parseFloat(p.baseline_balance))
+				}
+			]
+		};
+	});
 </script>
 
 <div class="space-y-6">
@@ -269,6 +345,18 @@
 					</button>
 				</div>
 			</div>
+
+			{#if netWorthChart}
+				<div class="card-surface rounded-2xl p-6 space-y-3">
+					<h2 class="text-base font-semibold text-white">Net Worth Trend</h2>
+					<LineChart
+						labels={netWorthChart.labels}
+						series={netWorthChart.series}
+						currency={netWorth.base_currency}
+						height={210}
+					/>
+				</div>
+			{/if}
 
 			<div class="grid lg:grid-cols-2 gap-6">
 				<div class="card-surface rounded-2xl p-6 space-y-4">
@@ -465,6 +553,11 @@
 						{#if debtResult.months_saved_by_avalanche > 0}and {debtResult.months_saved_by_avalanche} months{/if}.
 						Order: {debtResult.avalanche.payoff_order.join(' → ')}
 					</div>
+					{#if debtChart}
+						<div class="pt-2">
+							<LineChart labels={debtChart.labels} series={debtChart.series} currency={baseCcy} height={180} />
+						</div>
+					{/if}
 				{/if}
 			</div>
 
@@ -550,6 +643,11 @@
 							· Cash runway: <strong>{whatIfResult.scenario_runway_months} months</strong>
 						{/if}
 					</div>
+					{#if whatIfChart}
+						<div class="pt-2">
+							<LineChart labels={whatIfChart.labels} series={whatIfChart.series} currency={baseCcy} height={180} />
+						</div>
+					{/if}
 				{/if}
 			</div>
 		</div>

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import type { Category, DashboardSummary } from '$lib/api/types';
+	import type { Category, DashboardSummary, ProactiveInsight } from '$lib/api/types';
 	import { formatDate, formatMoney, formatShortMonth } from '$lib/utils/format';
 	import {
 		TrendingUp,
@@ -12,25 +13,41 @@
 		Plus,
 		AlertCircle,
 		ArrowUpRight,
-		ArrowDownRight
+		ArrowDownRight,
+		Sparkles,
+		Send
 	} from 'lucide-svelte';
 
 	let summary = $state<DashboardSummary | null>(null);
 	let categories = $state<Map<string, Category>>(new Map());
+	let insights = $state<ProactiveInsight[]>([]);
+	let quickPrompt = $state('');
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
 	onMount(async () => {
 		try {
-			const [sum, cats] = await Promise.all([api.dashboardSummary(6), api.listCategories()]);
+			const [sum, cats, ins] = await Promise.all([
+				api.dashboardSummary(6),
+				api.listCategories(),
+				api.listInsights().catch(() => [] as ProactiveInsight[])
+			]);
 			summary = sum;
 			categories = new Map(cats.map((c) => [c.id, c]));
+			insights = ins.slice(0, 3);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load dashboard';
 		} finally {
 			loading = false;
 		}
 	});
+
+	function askLunaQuick(e: SubmitEvent) {
+		e.preventDefault();
+		const q = quickPrompt.trim();
+		if (!q) return;
+		goto(`/advisor?q=${encodeURIComponent(q)}`);
+	}
 
 	let maxBarValue = $derived.by(() => {
 		if (!summary) return 100;
@@ -94,6 +111,43 @@
 				<span class="text-xs font-semibold text-amber-300 whitespace-nowrap">Review Queue →</span>
 			</a>
 		{/if}
+
+		<!-- Luna Quick-Ask & Proactive Insights -->
+		<div class="card-surface rounded-2xl p-4 sm:p-5 space-y-3 border-emerald-500/20">
+			<form onsubmit={askLunaQuick} class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+				<div class="flex items-center gap-2.5 flex-1 px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 focus-within:border-emerald-500">
+					<Sparkles class="w-4 h-4 text-emerald-400 shrink-0" />
+					<input
+						type="text"
+						bind:value={quickPrompt}
+						placeholder="Ask Luna anything — e.g. 'How much did I spend on dining?' or 'Create a $400 Groceries budget'"
+						class="w-full bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none"
+					/>
+				</div>
+				<button
+					type="submit"
+					class="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition cursor-pointer shrink-0"
+				>
+					<Send class="w-3.5 h-3.5" /> Ask Luna
+				</button>
+			</form>
+
+			{#if insights.length > 0}
+				<div class="grid md:grid-cols-3 gap-2.5 pt-1">
+					{#each insights as ins}
+						<a
+							href="/advisor"
+							class="p-3 rounded-xl bg-slate-950/75 border border-slate-800/90 hover:border-emerald-500/40 transition space-y-1"
+						>
+							<div class="text-xs font-semibold truncate {ins.severity === 'alert' ? 'text-rose-300' : ins.severity === 'warning' ? 'text-amber-300' : 'text-emerald-300'}">
+								{ins.title}
+							</div>
+							<p class="text-[11px] text-slate-400 line-clamp-2">{ins.summary}</p>
+						</a>
+					{/each}
+				</div>
+			{/if}
+		</div>
 
 		<!-- KPI Cards -->
 		<div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
