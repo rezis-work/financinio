@@ -4,6 +4,9 @@ primary_region = 'fra'
 [build]
   dockerfile = 'Dockerfile'
 
+[deploy]
+  release_command = '/app/.venv/bin/alembic upgrade head'
+
 [env]
   APP_ENV = 'production'
   PORT = '8000'
