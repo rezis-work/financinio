@@ -142,7 +142,9 @@
 							<div class="text-xs font-semibold truncate {ins.severity === 'alert' ? 'text-rose-300' : ins.severity === 'warning' ? 'text-amber-300' : 'text-emerald-300'}">
 								{ins.title}
 							</div>
-							<p class="text-[11px] text-slate-400 line-clamp-2">{ins.summary}</p>
+							<p class="text-[11px] text-slate-400 line-clamp-2">
+								{ins.summary.replace(/[*#_`>-]/g, '').replace(/\s+/g, ' ').trim()}
+							</p>
 						</a>
 					{/each}
 				</div>

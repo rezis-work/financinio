@@ -46,6 +46,8 @@
 		return Math.min(100, Math.round((auth.user.ai_tokens_used / auth.user.ai_token_limit) * 100));
 	});
 
+	let isAdvisorRoute = $derived(page.url.pathname.startsWith('/advisor'));
+
 	$effect(() => {
 		if (!auth.loading && !auth.user) {
 			goto('/login');
@@ -208,9 +210,15 @@
 				</div>
 			{/if}
 
-			<main class="flex-1 p-5 sm:p-8 max-w-7xl w-full mx-auto">
-				{@render children()}
-			</main>
+			{#if isAdvisorRoute}
+				<main class="flex-1 min-h-0 flex flex-col">
+					{@render children()}
+				</main>
+			{:else}
+				<main class="flex-1 p-5 sm:p-8 max-w-7xl w-full mx-auto">
+					{@render children()}
+				</main>
+			{/if}
 		</div>
 	</div>
 {/if}

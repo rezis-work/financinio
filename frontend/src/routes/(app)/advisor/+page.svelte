@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api/client';
 	import { auth } from '$lib/stores/auth.svelte';
+	import MarkdownMessage from '$lib/components/MarkdownMessage.svelte';
 	import type {
 		ChatMessage,
 		ChatThread,
@@ -12,7 +13,7 @@
 	} from '$lib/api/types';
 	import {
 		Sparkles,
-		Send,
+		ArrowUp,
 		Plus,
 		Trash2,
 		MessageSquare,
@@ -23,10 +24,18 @@
 		ShieldAlert,
 		AlertTriangle,
 		Info,
-		RefreshCw
+		RefreshCw,
+		Copy,
+		Check,
+		PanelLeft,
+		X,
+		ArrowDown
 	} from 'lucide-svelte';
 
 	let sideTab = $state<'chats' | 'insights' | 'memory'>('chats');
+	let drawerOpen = $state(false);
+	let desktopPanelOpen = $state(true);
+
 	let threads = $state<ChatThread[]>([]);
 	let activeThreadId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
@@ -38,24 +47,63 @@
 	let statusLabel = $state<string | null>(null);
 	let streamingText = $state('');
 	let decidingId = $state<string | null>(null);
+	let copiedMsgId = $state<string | null>(null);
 	let generatingInsights = $state(false);
 	let newMemoryFact = $state('');
 	let error = $state<string | null>(null);
+
 	let chatScrollEl = $state<HTMLDivElement | null>(null);
+	let textareaEl = $state<HTMLTextAreaElement | null>(null);
+	let showScrollDown = $state(false);
 
 	const STARTER_PROMPTS = [
-		'How much did I spend this month and what are my top categories?',
-		'Compare Snowball vs Avalanche payoff on my debts',
-		'Create a monthly Dining & Coffee budget of $350',
-		'What if I cut expenses by $250/mo for the next 12 months?',
-		'Remember that I am saving for a house down payment in 2027'
+		{
+			title: 'Monthly Spending Breakdown',
+			prompt: 'How much did I spend this month and what are my top categories?'
+		},
+		{
+			title: 'Debt Payoff Comparison',
+			prompt: 'Compare Snowball vs Avalanche payoff on my debts'
+		},
+		{
+			title: 'Create a Smart Budget',
+			prompt: 'Create a monthly Dining & Coffee budget of $350'
+		},
+		{
+			title: '12-Month What-If Projection',
+			prompt: 'What if I cut expenses by $250/mo for the next 12 months?'
+		}
 	];
 
-	async function scrollToBottom() {
+	const QUICK_FOLLOWUPS = [
+		'Break this down in a table',
+		'What are my top 3 action steps?',
+		'Check my subscriptions for price hikes'
+	];
+
+	let activeThread = $derived(threads.find((t) => t.id === activeThreadId) ?? null);
+
+	async function scrollToBottom(smooth = false) {
 		await tick();
 		if (chatScrollEl) {
-			chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
+			chatScrollEl.scrollTo({
+				top: chatScrollEl.scrollHeight,
+				behavior: smooth ? 'smooth' : 'auto'
+			});
+			showScrollDown = false;
 		}
+	}
+
+	function handleScroll() {
+		if (!chatScrollEl) return;
+		const dist = chatScrollEl.scrollHeight - chatScrollEl.scrollTop - chatScrollEl.clientHeight;
+		showScrollDown = dist > 160;
+	}
+
+	function autoResizeTextarea() {
+		if (!textareaEl) return;
+		textareaEl.style.height = 'auto';
+		textareaEl.style.height = `${Math.min(textareaEl.scrollHeight, 160)}px`;
 	}
 
 	async function loadInitial() {
@@ -86,6 +134,7 @@
 
 	async function selectThread(id: string) {
 		activeThreadId = id;
+		drawerOpen = false;
 		error = null;
 		const detail = await api.getThread(id);
 		messages = detail.messages;
@@ -97,6 +146,7 @@
 		threads = [created, ...threads];
 		activeThreadId = created.id;
 		messages = [];
+		drawerOpen = false;
 		return created.id;
 	}
 
@@ -116,6 +166,7 @@
 		const text = (textOverride ?? inputText).trim();
 		if (!text || streaming) return;
 		inputText = '';
+		if (textareaEl) textareaEl.style.height = 'auto';
 		error = null;
 		streaming = true;
 		streamingText = '';
@@ -124,7 +175,6 @@
 		try {
 			const tid = activeThreadId ?? (await createNewThread());
 
-			// Optimistically render user bubble
 			const tempUserMsg: ChatMessage = {
 				id: `temp-u-${Date.now()}`,
 				thread_id: tid,
@@ -137,7 +187,7 @@
 				created_at: new Date().toISOString()
 			};
 			messages = [...messages, tempUserMsg];
-			await scrollToBottom();
+			await scrollToBottom(true);
 
 			await api.streamAdvisorMessage(tid, text, {
 				onStatus: (label) => {
@@ -150,7 +200,7 @@
 				onActionRequired: (msg) => {
 					messages = [...messages, msg];
 					streamingText = '';
-					scrollToBottom();
+					scrollToBottom(true);
 				},
 				onDone: (msg) => {
 					if (!messages.some((m) => m.id === msg.id)) {
@@ -158,14 +208,13 @@
 					}
 					streamingText = '';
 					statusLabel = null;
-					scrollToBottom();
+					scrollToBottom(true);
 				},
 				onError: (detail) => {
 					error = detail;
 				}
 			});
 
-			// Refresh threads, memories & live AI token meter
 			const [ths, mems] = await Promise.all([
 				api.listThreads(),
 				api.listMemories(),
@@ -181,6 +230,13 @@
 		}
 	}
 
+	function handleComposerKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			sendMessage();
+		}
+	}
+
 	async function handleActionDecision(msg: ChatMessage, approved: boolean) {
 		if (!activeThreadId) return;
 		decidingId = msg.id;
@@ -188,11 +244,23 @@
 		try {
 			const res = await api.decideAdvisorAction(activeThreadId, msg.id, approved);
 			messages = messages.map((m) => (m.id === msg.id ? res.message : m));
-			await scrollToBottom();
+			await scrollToBottom(true);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Action decision failed';
 		} finally {
 			decidingId = null;
+		}
+	}
+
+	async function copyMessage(msg: ChatMessage) {
+		try {
+			await navigator.clipboard.writeText(msg.content);
+			copiedMsgId = msg.id;
+			setTimeout(() => {
+				if (copiedMsgId === msg.id) copiedMsgId = null;
+			}, 1800);
+		} catch {
+			// ignore clipboard errors
 		}
 	}
 
@@ -202,6 +270,7 @@
 		try {
 			await api.generateInsights();
 			insights = await api.listInsights();
+			await auth.hydrate();
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Insight generation failed';
 		} finally {
@@ -227,6 +296,12 @@
 		memories = memories.filter((m) => m.id !== id);
 	}
 
+	function openPanelTab(tab: 'chats' | 'insights' | 'memory') {
+		sideTab = tab;
+		drawerOpen = true;
+		desktopPanelOpen = true;
+	}
+
 	function agentLabel(agent: string | null): string {
 		if (agent === 'ledger_analyst') return 'Ledger Analyst';
 		if (agent === 'document_rag') return 'Document & Memory RAG';
@@ -234,35 +309,34 @@
 		if (agent === 'action_proposer') return 'Action Agent (HITL)';
 		return 'Luna Advisor';
 	}
+
+	function humanizeKey(k: string): string {
+		return k
+			.replaceAll('_', ' ')
+			.replace(/\b\w/g, (c) => c.toUpperCase());
+	}
 </script>
 
-<div class="h-[calc(100vh-5.5rem)] flex flex-col gap-4">
-	<!-- Header -->
-	<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
-		<div class="flex items-center gap-3">
-			<div class="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500/25 to-cyan-500/25 border border-emerald-500/35 flex items-center justify-center text-emerald-300">
-				<Sparkles class="w-5 h-5" />
-			</div>
-			<div>
-				<h1 class="text-xl font-bold tracking-tight text-white">Luna — AI Financial Advisor</h1>
-				<p class="text-xs text-slate-400">
-					Multi-Agent LangGraph Copilot · Neon Ledger Tools · Upstash Vector RAG · HITL Action Approvals
-				</p>
-			</div>
-		</div>
-	</div>
-
-	{#if error}
-		<div class="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs shrink-0">
-			{error}
-		</div>
+<!-- Full-viewport Edge-to-Edge Chat Workspace -->
+<div class="h-[calc(100dvh-3.5rem)] md:h-dvh flex overflow-hidden bg-slate-950 relative">
+	<!-- Mobile Slide-Over Backdrop -->
+	{#if drawerOpen}
+		<button
+			type="button"
+			onclick={() => (drawerOpen = false)}
+			aria-label="Close panel"
+			class="lg:hidden fixed inset-0 z-40 bg-black/65 backdrop-blur-xs"
+		></button>
 	{/if}
 
-	<!-- Main Grid -->
-	<div class="flex-1 min-h-0 grid lg:grid-cols-4 gap-4">
-		<!-- Left Panel: Chats / Insights / Memory -->
-		<div class="card-surface rounded-2xl flex flex-col min-h-0 overflow-hidden">
-			<div class="grid grid-cols-3 p-1.5 border-b border-slate-800/80 bg-slate-950/60">
+	<!-- Side Panel: Chats / Insights / Memory (Slide-over on mobile, Collapsible rail on desktop) -->
+	<aside
+		class="fixed lg:static inset-y-0 left-0 z-50 w-80 max-w-[85vw] lg:w-72 xl:w-80 bg-slate-950 border-r border-slate-800/80 flex flex-col transition-transform duration-200 {drawerOpen
+			? 'translate-x-0'
+			: '-translate-x-full lg:translate-x-0'} {desktopPanelOpen ? 'lg:flex' : 'lg:hidden'}"
+	>
+		<div class="flex items-center justify-between px-3.5 py-3 border-b border-slate-800/80">
+			<div class="grid grid-cols-3 flex-1 p-1 rounded-xl bg-slate-900/90 border border-slate-800/80">
 				<button
 					type="button"
 					onclick={() => (sideTab = 'chats')}
@@ -275,11 +349,16 @@
 				<button
 					type="button"
 					onclick={() => (sideTab = 'insights')}
-					class="py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer {sideTab === 'insights'
+					class="py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer relative {sideTab === 'insights'
 						? 'bg-emerald-500/20 text-emerald-300'
 						: 'text-slate-400 hover:text-white'}"
 				>
 					<Lightbulb class="w-3.5 h-3.5" /> Insights
+					{#if insights.length > 0}
+						<span class="ml-0.5 px-1 rounded-full bg-emerald-500/25 text-emerald-300 text-[9px] font-mono-num">
+							{insights.length}
+						</span>
+					{/if}
 				</button>
 				<button
 					type="button"
@@ -291,280 +370,445 @@
 					<Brain class="w-3.5 h-3.5" /> Memory
 				</button>
 			</div>
-
-			{#if sideTab === 'chats'}
-				<div class="p-3 border-b border-slate-800/70">
-					<button
-						type="button"
-						onclick={createNewThread}
-						class="w-full py-2 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition"
-					>
-						<Plus class="w-3.5 h-3.5" /> New Conversation
-					</button>
-				</div>
-				<div class="flex-1 overflow-y-auto p-2 space-y-1">
-					{#if threads.length === 0}
-						<p class="text-xs text-slate-500 text-center py-8 px-3">Start a conversation with Luna.</p>
-					{:else}
-						{#each threads as th}
-							<div
-								class="group flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border transition {activeThreadId === th.id
-									? 'bg-slate-800/80 border-emerald-500/35 text-white'
-									: 'bg-transparent border-transparent hover:bg-slate-900/60 text-slate-300'}"
-							>
-								<button
-									type="button"
-									onclick={() => selectThread(th.id)}
-									class="flex-1 text-left text-xs font-medium truncate cursor-pointer"
-								>
-									{th.title}
-								</button>
-								<button
-									type="button"
-									onclick={() => deleteThread(th.id)}
-									class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 cursor-pointer"
-									title="Delete chat"
-								>
-									<Trash2 class="w-3.5 h-3.5" />
-								</button>
-							</div>
-						{/each}
-					{/if}
-				</div>
-			{:else if sideTab === 'insights'}
-				<div class="p-3 border-b border-slate-800/70">
-					<button
-						type="button"
-						disabled={generatingInsights}
-						onclick={handleGenerateInsights}
-						class="w-full py-2 px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-					>
-						<RefreshCw class="w-3.5 h-3.5 {generatingInsights ? 'animate-spin' : ''}" />
-						{generatingInsights ? 'Scanning Ledger...' : 'Generate Digest & Anomalies'}
-					</button>
-				</div>
-				<div class="flex-1 overflow-y-auto p-3 space-y-2.5">
-					{#if insights.length === 0}
-						<p class="text-xs text-slate-500 text-center py-6">
-							Click above to scan for spending anomalies, budget overruns, and generate Luna's digest.
-						</p>
-					{:else}
-						{#each insights as ins}
-							<div class="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
-								<div class="flex items-start justify-between gap-2">
-									<div class="flex items-center gap-1.5 text-xs font-semibold {ins.severity === 'alert' ? 'text-rose-300' : ins.severity === 'warning' ? 'text-amber-300' : 'text-emerald-300'}">
-										{#if ins.severity === 'alert'}
-											<ShieldAlert class="w-3.5 h-3.5 shrink-0" />
-										{:else if ins.severity === 'warning'}
-											<AlertTriangle class="w-3.5 h-3.5 shrink-0" />
-										{:else}
-											<Info class="w-3.5 h-3.5 shrink-0" />
-										{/if}
-										<span>{ins.title}</span>
-									</div>
-									<button
-										type="button"
-										onclick={() => handleDismissInsight(ins.id)}
-										class="text-slate-500 hover:text-slate-300 text-[10px] cursor-pointer"
-									>
-										✕
-									</button>
-								</div>
-								<p class="text-[11px] text-slate-300 whitespace-pre-line leading-relaxed">{ins.summary}</p>
-							</div>
-						{/each}
-					{/if}
-				</div>
-			{:else}
-				<!-- Long-term Upstash Vector Memory -->
-				<form onsubmit={handleAddMemory} class="p-3 border-b border-slate-800/70 space-y-2">
-					<input
-						type="text"
-						bind:value={newMemoryFact}
-						placeholder="Add a financial preference or goal..."
-						class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-emerald-500"
-					/>
-					<button
-						type="submit"
-						class="w-full py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-[11px] font-semibold cursor-pointer"
-					>
-						+ Save to Upstash Memory
-					</button>
-				</form>
-				<div class="flex-1 overflow-y-auto p-3 space-y-2">
-					{#if memories.length === 0}
-						<p class="text-xs text-slate-500 text-center py-6">
-							No memories stored yet. Tell Luna "Remember that..." in chat or add one above.
-						</p>
-					{:else}
-						{#each memories as mem}
-							<div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-start justify-between gap-2 text-xs">
-								<span class="text-slate-200 leading-snug">{mem.fact}</span>
-								<button
-									type="button"
-									onclick={() => handleDeleteMemory(mem.id)}
-									class="text-slate-500 hover:text-rose-400 shrink-0 cursor-pointer"
-								>
-									<Trash2 class="w-3.5 h-3.5" />
-								</button>
-							</div>
-						{/each}
-					{/if}
-				</div>
-			{/if}
+			<button
+				type="button"
+				onclick={() => (drawerOpen = false)}
+				class="lg:hidden ml-2 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+				aria-label="Close drawer"
+			>
+				<X class="w-4 h-4" />
+			</button>
 		</div>
 
-		<!-- Center/Right Chat Stream -->
-		<div class="lg:col-span-3 card-surface rounded-2xl flex flex-col min-h-0 overflow-hidden">
-			<div bind:this={chatScrollEl} class="flex-1 overflow-y-auto p-5 space-y-4">
-				{#if messages.length === 0 && !streaming}
-					<div class="h-full flex flex-col items-center justify-center text-center max-w-xl mx-auto space-y-5 py-8">
-						<div class="h-14 w-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-							<Sparkles class="w-7 h-7" />
+		{#if sideTab === 'chats'}
+			<div class="p-3 border-b border-slate-800/70">
+				<button
+					type="button"
+					onclick={createNewThread}
+					class="w-full py-2.5 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition"
+				>
+					<Plus class="w-4 h-4" /> New Conversation
+				</button>
+			</div>
+			<div class="flex-1 overflow-y-auto p-2.5 space-y-1">
+				{#if threads.length === 0}
+					<p class="text-xs text-slate-500 text-center py-10 px-4">
+						Your conversations with Luna will appear here.
+					</p>
+				{:else}
+					{#each threads as th}
+						<div
+							class="group flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border transition {activeThreadId === th.id
+								? 'bg-slate-900 border-emerald-500/35 text-white'
+								: 'bg-transparent border-transparent hover:bg-slate-900/60 text-slate-300'}"
+						>
+							<button
+								type="button"
+								onclick={() => selectThread(th.id)}
+								class="flex-1 text-left text-xs font-medium truncate cursor-pointer"
+							>
+								{th.title}
+							</button>
+							<button
+								type="button"
+								onclick={() => deleteThread(th.id)}
+								class="lg:opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 cursor-pointer p-1"
+								title="Delete chat"
+							>
+								<Trash2 class="w-3.5 h-3.5" />
+							</button>
 						</div>
-						<div>
-							<h2 class="text-lg font-semibold text-white">Ask Luna anything about your finances</h2>
-							<p class="text-xs text-slate-400 mt-1">
-								Luna routes your question to specialized agents backed by your live Neon ledger, deterministic Python simulators, and Upstash Vector receipt & memory search.
-							</p>
-						</div>
-						<div class="grid sm:grid-cols-2 gap-2.5 w-full">
-							{#each STARTER_PROMPTS as prompt}
+					{/each}
+				{/if}
+			</div>
+		{:else if sideTab === 'insights'}
+			<div class="p-3 border-b border-slate-800/70">
+				<button
+					type="button"
+					disabled={generatingInsights}
+					onclick={handleGenerateInsights}
+					class="w-full py-2.5 px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+				>
+					<RefreshCw class="w-3.5 h-3.5 {generatingInsights ? 'animate-spin' : ''}" />
+					{generatingInsights ? 'Scanning Ledger...' : 'Generate Fresh Digest'}
+				</button>
+			</div>
+			<div class="flex-1 overflow-y-auto p-3 space-y-3">
+				{#if insights.length === 0}
+					<p class="text-xs text-slate-500 text-center py-8 px-3">
+						Run a ledger scan for spending anomalies, budget overruns, and Luna's weekly digest.
+					</p>
+				{:else}
+					{#each insights as ins}
+						<div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-2">
+							<div class="flex items-start justify-between gap-2">
+								<div class="flex items-center gap-1.5 text-xs font-semibold {ins.severity === 'alert' ? 'text-rose-300' : ins.severity === 'warning' ? 'text-amber-300' : 'text-emerald-300'}">
+									{#if ins.severity === 'alert'}
+										<ShieldAlert class="w-3.5 h-3.5 shrink-0" />
+									{:else if ins.severity === 'warning'}
+										<AlertTriangle class="w-3.5 h-3.5 shrink-0" />
+									{:else}
+										<Info class="w-3.5 h-3.5 shrink-0" />
+									{/if}
+									<span>{ins.title}</span>
+								</div>
 								<button
 									type="button"
-									onclick={() => sendMessage(prompt)}
-									class="text-left p-3 rounded-xl bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/40 text-xs text-slate-300 transition cursor-pointer"
+									onclick={() => handleDismissInsight(ins.id)}
+									class="text-slate-500 hover:text-slate-300 text-xs cursor-pointer"
+									aria-label="Dismiss insight"
 								>
-									"{prompt}"
+									✕
+								</button>
+							</div>
+							<MarkdownMessage content={ins.summary} compact />
+						</div>
+					{/each}
+				{/if}
+			</div>
+		{:else}
+			<form onsubmit={handleAddMemory} class="p-3 border-b border-slate-800/70 space-y-2">
+				<input
+					type="text"
+					bind:value={newMemoryFact}
+					placeholder="Add a financial goal or preference..."
+					class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+				/>
+				<button
+					type="submit"
+					class="w-full py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-semibold cursor-pointer"
+				>
+					+ Save to Upstash Memory
+				</button>
+			</form>
+			<div class="flex-1 overflow-y-auto p-3 space-y-2">
+				{#if memories.length === 0}
+					<p class="text-xs text-slate-500 text-center py-8 px-3">
+						No long-term memories yet. Tell Luna "Remember that..." in chat or save one above.
+					</p>
+				{:else}
+					{#each memories as mem}
+						<div class="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-start justify-between gap-2 text-xs">
+							<span class="text-slate-200 leading-relaxed">{mem.fact}</span>
+							<button
+								type="button"
+								onclick={() => handleDeleteMemory(mem.id)}
+								class="text-slate-500 hover:text-rose-400 shrink-0 cursor-pointer p-0.5"
+								aria-label="Delete memory"
+							>
+								<Trash2 class="w-3.5 h-3.5" />
+							</button>
+						</div>
+					{/each}
+				{/if}
+			</div>
+		{/if}
+	</aside>
+
+	<!-- Main Full-Height Chat Column -->
+	<div class="flex-1 flex flex-col min-w-0 min-h-0 relative">
+		<!-- Compact Top Toolbar -->
+		<header class="shrink-0 h-14 px-3 sm:px-5 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md flex items-center justify-between gap-3">
+			<div class="flex items-center gap-2.5 min-w-0">
+				<!-- Toggle Drawer (mobile) / Toggle Rail (desktop) -->
+				<button
+					type="button"
+					onclick={() => (drawerOpen = !drawerOpen)}
+					class="lg:hidden p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer"
+					aria-label="Open chats and insights"
+				>
+					<PanelLeft class="w-4 h-4" />
+				</button>
+				<button
+					type="button"
+					onclick={() => (desktopPanelOpen = !desktopPanelOpen)}
+					class="hidden lg:inline-flex p-2 rounded-xl bg-slate-900/70 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+					title="Toggle side panel"
+					aria-label="Toggle side panel"
+				>
+					<PanelLeft class="w-4 h-4" />
+				</button>
+
+				<div class="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500/25 to-cyan-500/25 border border-emerald-500/35 flex items-center justify-center text-emerald-300 shrink-0">
+					<Sparkles class="w-4 h-4" />
+				</div>
+				<div class="min-w-0">
+					<div class="text-sm font-semibold text-white truncate">
+						{activeThread ? activeThread.title : 'Luna AI Advisor'}
+					</div>
+					<div class="text-[11px] text-slate-400 hidden sm:block">
+						Multi-Agent LangGraph · Neon Ledger · Upstash RAG
+					</div>
+				</div>
+			</div>
+
+			<div class="flex items-center gap-1.5 shrink-0">
+				<button
+					type="button"
+					onclick={() => openPanelTab('insights')}
+					class="lg:hidden inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-300"
+				>
+					<Lightbulb class="w-3.5 h-3.5 text-amber-400" />
+					{#if insights.length > 0}<span class="font-mono-num">{insights.length}</span>{/if}
+				</button>
+				<button
+					type="button"
+					onclick={createNewThread}
+					class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold cursor-pointer transition"
+				>
+					<Plus class="w-3.5 h-3.5" />
+					<span class="hidden sm:inline">New Chat</span>
+				</button>
+			</div>
+		</header>
+
+		{#if error}
+			<div class="shrink-0 mx-auto max-w-3xl w-full px-4 pt-3">
+				<div class="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-3">
+					<span>{error}</span>
+					<button type="button" onclick={() => (error = null)} class="text-rose-200 hover:text-white cursor-pointer">✕</button>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Scrollable Message Canvas -->
+		<div
+			bind:this={chatScrollEl}
+			onscroll={handleScroll}
+			class="flex-1 overflow-y-auto px-4 sm:px-6 py-6 scroll-smooth"
+		>
+			<div class="max-w-3xl mx-auto space-y-6">
+				{#if messages.length === 0 && !streaming}
+					<!-- Spacious Welcome Hero -->
+					<div class="py-8 sm:py-14 flex flex-col items-center text-center space-y-6">
+						<div class="h-16 w-16 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-lg shadow-emerald-950/50">
+							<Sparkles class="w-8 h-8" />
+						</div>
+						<div class="space-y-2 max-w-lg">
+							<h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+								Hi, I'm Luna.
+							</h1>
+							<p class="text-sm text-slate-400 leading-relaxed">
+								Ask about your cash flow, compare Snowball vs. Avalanche debt payoff, search uploaded receipts, or ask me to create budgets & goals with one-click approval.
+							</p>
+						</div>
+
+						<div class="grid sm:grid-cols-2 gap-3 w-full pt-2">
+							{#each STARTER_PROMPTS as item}
+								<button
+									type="button"
+									onclick={() => sendMessage(item.prompt)}
+									class="text-left p-4 rounded-2xl bg-slate-900/75 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/40 transition cursor-pointer space-y-1 group"
+								>
+									<div class="text-xs font-semibold text-emerald-400 group-hover:text-emerald-300">
+										{item.title}
+									</div>
+									<div class="text-xs text-slate-300 leading-relaxed">
+										{item.prompt}
+									</div>
 								</button>
 							{/each}
 						</div>
 					</div>
 				{:else}
 					{#each messages as msg}
-						<div class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
-							<div
-								class="max-w-[85%] rounded-2xl px-4 py-3 space-y-2.5 {msg.role === 'user'
-									? 'bg-emerald-500 text-slate-950 font-medium text-sm'
-									: 'bg-slate-900/90 border border-slate-800 text-slate-100 text-sm'}"
-							>
-								{#if msg.role === 'assistant'}
-									<div class="flex items-center gap-2 text-[11px]">
-										<span class="font-semibold text-emerald-400">Luna</span>
-										{#if msg.active_agent}
-											<span class="px-2 py-0.5 rounded-full bg-slate-800 text-cyan-300 text-[10px] font-medium">
-												{agentLabel(msg.active_agent)}
-											</span>
-										{/if}
-									</div>
-								{/if}
+						{#if msg.role === 'user'}
+							<div class="flex justify-end">
+								<div class="max-w-[88%] sm:max-w-[78%] rounded-2xl rounded-tr-sm px-4 py-3 bg-emerald-500 text-slate-950 font-medium text-[15px] leading-relaxed shadow-sm">
+									<div class="whitespace-pre-wrap">{msg.content}</div>
+								</div>
+							</div>
+						{:else}
+							<div class="flex items-start gap-3 sm:gap-4 group">
+								<div class="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+									<Sparkles class="w-4 h-4" />
+								</div>
 
-								<div class="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
-
-								<!-- Interactive HITL Action Approval Card -->
-								{#if msg.pending_action}
-									<div class="p-3.5 rounded-xl bg-slate-950/90 border {msg.action_status === 'pending' ? 'border-amber-500/40' : msg.action_status === 'executed' ? 'border-emerald-500/40' : 'border-slate-700'} space-y-3">
-										<div class="flex items-center justify-between gap-2">
-											<span class="text-xs font-semibold text-white">
-												{String(msg.pending_action.title || 'Proposed Action')}
-											</span>
-											<span
-												class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full {msg.action_status === 'pending'
-													? 'bg-amber-500/15 text-amber-300'
-													: msg.action_status === 'executed'
-														? 'bg-emerald-500/15 text-emerald-300'
-														: 'bg-rose-500/15 text-rose-300'}"
-											>
-												{msg.action_status}
-											</span>
+								<div class="flex-1 min-w-0 space-y-3">
+									<!-- Agent header & copy button -->
+									<div class="flex items-center justify-between gap-2">
+										<div class="flex items-center gap-2 flex-wrap">
+											<span class="text-xs font-semibold text-white">Luna</span>
+											{#if msg.active_agent}
+												<span class="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-cyan-300 text-[10px] font-medium">
+													{agentLabel(msg.active_agent)}
+												</span>
+											{/if}
 										</div>
+										<button
+											type="button"
+											onclick={() => copyMessage(msg)}
+											class="opacity-70 sm:opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-slate-400 hover:text-white hover:bg-slate-900 transition cursor-pointer"
+											title="Copy response"
+										>
+											{#if copiedMsgId === msg.id}
+												<Check class="w-3.5 h-3.5 text-emerald-400" />
+												<span class="text-emerald-400">Copied</span>
+											{:else}
+												<Copy class="w-3.5 h-3.5" />
+												<span class="hidden sm:inline">Copy</span>
+											{/if}
+										</button>
+									</div>
 
-										<div class="grid grid-cols-2 gap-1.5 text-[11px] font-mono-num text-slate-300">
-											{#each Object.entries(msg.pending_action).filter(([k, v]) => v !== null && !['title', 'summary'].includes(k)) as [k, v]}
-												<div class="bg-slate-900/80 px-2 py-1 rounded">
-													<span class="text-slate-500">{k}:</span> {String(v)}
+									<!-- Rich Formatted Markdown Body -->
+									<div class="rounded-2xl bg-slate-900/55 border border-slate-800/80 px-4 sm:px-5 py-3.5 sm:py-4">
+										<MarkdownMessage content={msg.content} />
+									</div>
+
+									<!-- Interactive HITL Action Approval Card -->
+									{#if msg.pending_action}
+										<div
+											class="p-4 rounded-2xl bg-slate-900/90 border {msg.action_status === 'pending'
+												? 'border-amber-500/45'
+												: msg.action_status === 'executed'
+													? 'border-emerald-500/45'
+													: 'border-slate-700'} space-y-3.5"
+										>
+											<div class="flex items-center justify-between gap-2">
+												<span class="text-sm font-semibold text-white">
+													{String(msg.pending_action.title || 'Proposed Financial Action')}
+												</span>
+												<span
+													class="text-[10px] font-semibold uppercase px-2.5 py-0.5 rounded-full {msg.action_status === 'pending'
+														? 'bg-amber-500/15 text-amber-300'
+														: msg.action_status === 'executed'
+															? 'bg-emerald-500/15 text-emerald-300'
+															: 'bg-rose-500/15 text-rose-300'}"
+												>
+													{msg.action_status}
+												</span>
+											</div>
+
+											<div class="grid sm:grid-cols-2 gap-2 text-xs">
+												{#each Object.entries(msg.pending_action).filter(([k, v]) => v !== null && !['title', 'summary'].includes(k)) as [k, v]}
+													<div class="bg-slate-950/90 border border-slate-800/80 px-3 py-2 rounded-xl flex items-center justify-between gap-2">
+														<span class="text-slate-400">{humanizeKey(k)}</span>
+														<span class="font-mono-num font-medium text-white">{String(v)}</span>
+													</div>
+												{/each}
+											</div>
+
+											{#if msg.action_status === 'pending'}
+												<div class="flex flex-wrap items-center gap-2 pt-1">
+													<button
+														type="button"
+														disabled={decidingId === msg.id}
+														onclick={() => handleActionDecision(msg, true)}
+														class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold cursor-pointer disabled:opacity-50"
+													>
+														<CheckCircle2 class="w-4 h-4" />
+														{decidingId === msg.id ? 'Executing...' : 'Approve & Save'}
+													</button>
+													<button
+														type="button"
+														disabled={decidingId === msg.id}
+														onclick={() => handleActionDecision(msg, false)}
+														class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 text-xs font-medium cursor-pointer disabled:opacity-50"
+													>
+														<XCircle class="w-4 h-4" />
+														Reject
+													</button>
 												</div>
+											{/if}
+										</div>
+									{/if}
+
+									<!-- Citations -->
+									{#if msg.citations && msg.citations.length > 0}
+										<div class="flex flex-wrap gap-1.5">
+											{#each msg.citations as cit}
+												<span class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-slate-400">
+													<strong class="text-slate-300">{cit.source}:</strong> {cit.label}
+												</span>
 											{/each}
 										</div>
+									{/if}
+								</div>
+							</div>
+						{/if}
+					{/each}
 
-										{#if msg.action_status === 'pending'}
-											<div class="flex items-center gap-2 pt-1">
-												<button
-													type="button"
-													disabled={decidingId === msg.id}
-													onclick={() => handleActionDecision(msg, true)}
-													class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold cursor-pointer disabled:opacity-50"
-												>
-													<CheckCircle2 class="w-3.5 h-3.5" />
-													{decidingId === msg.id ? 'Executing...' : 'Approve & Execute'}
-												</button>
-												<button
-													type="button"
-													disabled={decidingId === msg.id}
-													onclick={() => handleActionDecision(msg, false)}
-													class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 text-xs font-medium cursor-pointer disabled:opacity-50"
-												>
-													<XCircle class="w-3.5 h-3.5" />
-													Reject
-												</button>
-											</div>
-										{/if}
-									</div>
-								{/if}
-
-								<!-- Citations -->
-								{#if msg.citations && msg.citations.length > 0}
-									<div class="flex flex-wrap gap-1.5 pt-1">
-										{#each msg.citations as cit}
-											<span class="text-[10px] px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400">
-												<strong class="text-slate-300">{cit.source}:</strong> {cit.label}
-											</span>
-										{/each}
+					<!-- Live Streaming Bubble (with live Markdown rendering!) -->
+					{#if streaming}
+						<div class="flex items-start gap-3 sm:gap-4">
+							<div class="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+								<Sparkles class="w-4 h-4 animate-pulse" />
+							</div>
+							<div class="flex-1 min-w-0 space-y-2.5">
+								<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-xs text-emerald-300">
+									<span class="h-2 w-2 rounded-full bg-emerald-400 animate-ping"></span>
+									<span>{statusLabel || 'Luna is writing...'}</span>
+								</div>
+								{#if streamingText}
+									<div class="rounded-2xl bg-slate-900/55 border border-emerald-500/25 px-4 sm:px-5 py-3.5 sm:py-4">
+										<MarkdownMessage content={streamingText} />
 									</div>
 								{/if}
 							</div>
 						</div>
-					{/each}
-
-					{#if streaming}
-						<div class="flex justify-start">
-							<div class="max-w-[85%] rounded-2xl px-4 py-3 bg-slate-900/90 border border-emerald-500/30 text-sm text-slate-100 space-y-2">
-								<div class="flex items-center gap-2 text-xs text-emerald-400">
-									<Sparkles class="w-3.5 h-3.5 animate-pulse" />
-									<span>{statusLabel || 'Luna is responding...'}</span>
-								</div>
-								{#if streamingText}
-									<div class="whitespace-pre-wrap leading-relaxed">{streamingText}</div>
-								{/if}
-							</div>
+					{:else if messages.length > 0 && messages[messages.length - 1].role === 'assistant'}
+						<!-- One-tap Follow-up Suggestions -->
+						<div class="flex flex-wrap gap-2 pl-0 sm:pl-12 pt-1">
+							{#each QUICK_FOLLOWUPS as chip}
+								<button
+									type="button"
+									onclick={() => sendMessage(chip)}
+									class="px-3 py-1.5 rounded-full bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/35 text-xs text-slate-300 hover:text-white transition cursor-pointer"
+								>
+									{chip}
+								</button>
+							{/each}
 						</div>
 					{/if}
 				{/if}
 			</div>
+		</div>
 
-			<!-- Composer -->
+		<!-- Scroll to bottom floating pill -->
+		{#if showScrollDown}
+			<button
+				type="button"
+				onclick={() => scrollToBottom(true)}
+				class="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/95 border border-slate-700 text-xs text-slate-200 shadow-lg hover:border-emerald-500/50 cursor-pointer"
+			>
+				<ArrowDown class="w-3.5 h-3.5" /> Latest
+			</button>
+		{/if}
+
+		<!-- Modern Multiline Auto-Growing Composer -->
+		<div class="shrink-0 border-t border-slate-800/80 bg-slate-950/95 backdrop-blur-md px-3 sm:px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
 			<form
 				onsubmit={(e) => {
 					e.preventDefault();
 					sendMessage();
 				}}
-				class="p-3.5 border-t border-slate-800/80 bg-slate-950/70 flex items-center gap-2.5"
+				class="max-w-3xl mx-auto"
 			>
-				<input
-					type="text"
-					disabled={streaming}
-					bind:value={inputText}
-					placeholder="Ask Luna about spending, debts, receipts, or say 'Create a $400 Dining budget'..."
-					class="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
-				/>
-				<button
-					type="submit"
-					disabled={streaming || !inputText.trim()}
-					class="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-semibold text-sm inline-flex items-center gap-1.5 cursor-pointer transition"
-				>
-					<Send class="w-4 h-4" />
-					Send
-				</button>
+				<div class="flex items-end gap-2 p-2 rounded-2xl bg-slate-900/90 border border-slate-800 focus-within:border-emerald-500/60 transition shadow-inner">
+					<textarea
+						bind:this={textareaEl}
+						bind:value={inputText}
+						oninput={autoResizeTextarea}
+						onkeydown={handleComposerKeydown}
+						disabled={streaming}
+						rows={1}
+						placeholder="Message Luna about spending, budgets, debts, or receipts..."
+						class="flex-1 bg-transparent px-2.5 py-2 text-[15px] text-white placeholder:text-slate-500 focus:outline-none resize-none max-h-40 leading-relaxed"
+					></textarea>
+					<button
+						type="submit"
+						disabled={streaming || !inputText.trim()}
+						aria-label="Send message"
+						class="h-10 w-10 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-35 text-slate-950 flex items-center justify-center shrink-0 cursor-pointer transition"
+					>
+						<ArrowUp class="w-5 h-5 stroke-[2.5]" />
+					</button>
+				</div>
+				<div class="flex items-center justify-between text-[10px] text-slate-500 px-1.5 pt-1.5">
+					<span>Luna provides educational financial planning, not licensed tax or investment advice.</span>
+					<span class="hidden sm:inline font-mono-num">Enter to send · Shift+Enter newline</span>
+				</div>
 			</form>
 		</div>
 	</div>
