@@ -65,3 +65,10 @@ class ImportReviewCommitRequest(BaseModel):
     decisions: list[StagedTransactionDecision] = Field(default_factory=list)
     skip_duplicates: bool = True
     learn_from_edits: bool = True
+
+
+class DeleteImportBatchResponse(BaseModel):
+    deleted_batch_id: UUID
+    deleted_transactions: int
+    recalculated_account_id: UUID | None = None
+    new_account_balance: Decimal | None = None

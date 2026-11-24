@@ -17,6 +17,7 @@ import type {
 	DashboardSummary,
 	DebtInput,
 	DebtPayoffComparison,
+	DeleteImportBatchResponse,
 	DetectRecurringResponse,
 	FinancialGoal,
 	FinancialHealthProfile,
@@ -294,6 +295,12 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
+
+	deleteImportBatch: (batchId: string, deleteTransactions = true) =>
+		request<DeleteImportBatchResponse>(
+			`/imports/${batchId}?delete_transactions=${deleteTransactions}`,
+			{ method: 'DELETE' }
+		),
 
 	// Phase 3: Budgets
 	getBudgets: (month?: string) =>

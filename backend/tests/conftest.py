@@ -86,6 +86,13 @@ class InMemoryVectorService:
                     )
         return matches[:top_k]
 
+    async def delete_document_chunks(self, user_id: UUID, document_id: UUID) -> None:
+        self.document_chunks = [
+            c
+            for c in self.document_chunks
+            if not (c["user_id"] == str(user_id) and c["document_id"] == str(document_id))
+        ]
+
     async def remember_user_fact(
         self, user_id: UUID, fact: str, category: str = "preference"
     ) -> UserFactMatch:

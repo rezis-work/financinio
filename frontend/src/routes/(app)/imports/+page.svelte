@@ -18,7 +18,9 @@
 		Brain,
 		ShieldCheck,
 		Landmark,
-		FileText
+		FileText,
+		Trash2,
+		X
 	} from 'lucide-svelte';
 
 	let accounts = $state<Account[]>([]);
@@ -31,6 +33,9 @@
 	let selectedAccountId = $state('');
 	let uploading = $state(false);
 	let committing = $state(false);
+	let confirmDeleteBatch = $state<ImportBatch | null>(null);
+	let deleteLedgerTxs = $state(true);
+	let deletingBatch = $state(false);
 	let skipDuplicates = $state(true);
 	let learnFromEdits = $state(true);
 	let dragOver = $state(false);
@@ -145,6 +150,48 @@
 			error = err instanceof ApiError ? err.message : 'Commit failed';
 		} finally {
 			committing = false;
+		}
+	}
+
+	function openDeleteConfirm(batch: ImportBatch) {
+		confirmDeleteBatch = batch;
+		deleteLedgerTxs = true;
+	}
+
+	async function handleConfirmDelete() {
+		if (!confirmDeleteBatch || deletingBatch) return;
+		const target = confirmDeleteBatch;
+		deletingBatch = true;
+		error = null;
+		successMsg = null;
+		try {
+			const res = await api.deleteImportBatch(target.id, deleteLedgerTxs);
+			confirmDeleteBatch = null;
+			const [accs, list] = await Promise.all([api.listAccounts(), api.listImportBatches()]);
+			accounts = accs;
+			batches = list;
+			if (activeBatch?.id === target.id) {
+				if (list.length > 0) {
+					await selectBatch(list[0].id);
+				} else {
+					activeBatch = null;
+					editedRows = {};
+				}
+			}
+			const acc = accs.find((a) => a.id === res.recalculated_account_id);
+			if (res.deleted_transactions > 0) {
+				const balSuffix =
+					res.new_account_balance !== null && acc
+						? ` Account balance recalculated to ${formatMoney(res.new_account_balance, acc.currency)}.`
+						: '';
+				successMsg = `Removed "${target.filename}" and deleted ${res.deleted_transactions} imported transactions from your ledger.${balSuffix}`;
+			} else {
+				successMsg = `Removed import "${target.filename}".`;
+			}
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'Failed to delete import batch';
+		} finally {
+			deletingBatch = false;
 		}
 	}
 
@@ -307,33 +354,46 @@
 			{:else}
 				<div class="space-y-1.5">
 					{#each batches as b}
-						<button
-							type="button"
-							onclick={() => selectBatch(b.id)}
-							class="w-full text-left p-3 rounded-xl border transition cursor-pointer {activeBatch?.id === b.id
+						<div
+							class="group relative flex items-stretch rounded-xl border transition {activeBatch?.id === b.id
 								? 'bg-emerald-500/10 border-emerald-500/35'
 								: 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'}"
 						>
-							<div class="flex items-center justify-between gap-2">
-								<span class="text-xs font-medium text-white truncate">{b.filename}</span>
-								<span
-									class="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase {b.status === 'committed'
-										? 'bg-emerald-500/15 text-emerald-300'
-										: b.status === 'needs_review'
-											? 'bg-amber-500/15 text-amber-300'
-											: 'bg-rose-500/15 text-rose-300'}"
-								>
-									{b.status.replace('_', ' ')}
-								</span>
-							</div>
-							<div class="text-[11px] text-slate-400 mt-1 flex items-center gap-2">
-								<FileSpreadsheet class="w-3 h-3" />
-								<span>{b.total_rows} rows</span>
-								{#if b.duplicate_rows > 0}
-									<span class="text-amber-400">· {b.duplicate_rows} dup</span>
-								{/if}
-							</div>
-						</button>
+							<button
+								type="button"
+								onclick={() => selectBatch(b.id)}
+								class="flex-1 min-w-0 text-left p-3 cursor-pointer"
+							>
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-xs font-medium text-white truncate">{b.filename}</span>
+									<span
+										class="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase shrink-0 {b.status === 'committed'
+											? 'bg-emerald-500/15 text-emerald-300'
+											: b.status === 'needs_review'
+												? 'bg-amber-500/15 text-amber-300'
+												: 'bg-rose-500/15 text-rose-300'}"
+									>
+										{b.status.replace('_', ' ')}
+									</span>
+								</div>
+								<div class="text-[11px] text-slate-400 mt-1 flex items-center gap-2">
+									<FileSpreadsheet class="w-3 h-3" />
+									<span>{b.total_rows} rows</span>
+									{#if b.duplicate_rows > 0}
+										<span class="text-amber-400">· {b.duplicate_rows} dup</span>
+									{/if}
+								</div>
+							</button>
+							<button
+								type="button"
+								onclick={() => openDeleteConfirm(b)}
+								title={b.status === 'committed' ? 'Remove import & imported transactions' : 'Discard import'}
+								aria-label="Delete import batch"
+								class="px-2.5 flex items-center justify-center text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-r-xl transition cursor-pointer border-l border-slate-800/60"
+							>
+								<Trash2 class="w-3.5 h-3.5" />
+							</button>
+						</div>
 					{/each}
 				</div>
 			{/if}
@@ -372,21 +432,31 @@
 						{/if}
 					</div>
 
-					{#if activeBatch.status === 'needs_review'}
+					<div class="flex flex-wrap items-center gap-2 shrink-0">
+						{#if activeBatch.status === 'needs_review'}
+							<button
+								type="button"
+								disabled={committing}
+								onclick={handleCommit}
+								class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm transition cursor-pointer disabled:opacity-50"
+							>
+								<CheckCircle2 class="w-4 h-4" />
+								{committing ? 'Committing...' : 'Approve & Commit to Ledger'}
+							</button>
+						{:else if activeBatch.status === 'committed'}
+							<span class="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 px-3 py-1.5 rounded-xl border border-emerald-500/30">
+								<CheckCircle2 class="w-4 h-4" /> Committed ({activeBatch.committed_rows} rows)
+							</span>
+						{/if}
 						<button
 							type="button"
-							disabled={committing}
-							onclick={handleCommit}
-							class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm transition cursor-pointer disabled:opacity-50 shrink-0"
+							onclick={() => activeBatch && openDeleteConfirm(activeBatch)}
+							class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold transition cursor-pointer"
 						>
-							<CheckCircle2 class="w-4 h-4" />
-							{committing ? 'Committing...' : 'Approve & Commit to Ledger'}
+							<Trash2 class="w-3.5 h-3.5" />
+							{activeBatch.status === 'committed' ? 'Remove Imported Ledger' : 'Discard Import'}
 						</button>
-					{:else if activeBatch.status === 'committed'}
-						<span class="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 px-3 py-1.5 rounded-xl border border-emerald-500/30">
-							<CheckCircle2 class="w-4 h-4" /> Committed ({activeBatch.committed_rows} rows)
-						</span>
-					{/if}
+					</div>
 				</div>
 
 				{#if activeBatch.status === 'needs_review'}
@@ -487,3 +557,84 @@
 		</div>
 	</div>
 </div>
+
+<!-- Confirm Delete Imported Batch Modal -->
+{#if confirmDeleteBatch}
+	<div class="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+		<div class="card-surface rounded-2xl w-full max-w-md p-6 space-y-5 border border-rose-500/30">
+			<div class="flex items-start justify-between gap-3">
+				<div class="flex items-center gap-2.5">
+					<div class="h-10 w-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+						<Trash2 class="w-5 h-5" />
+					</div>
+					<div>
+						<h2 class="text-base font-semibold text-white">
+							{confirmDeleteBatch.status === 'committed'
+								? 'Remove Imported Ledger?'
+								: 'Discard Import Batch?'}
+						</h2>
+						<p class="text-xs text-slate-400 truncate max-w-[260px]">
+							{confirmDeleteBatch.filename}
+						</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					disabled={deletingBatch}
+					onclick={() => (confirmDeleteBatch = null)}
+					class="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+				>
+					<X class="w-5 h-5" />
+				</button>
+			</div>
+
+			{#if confirmDeleteBatch.status === 'committed'}
+				<div class="space-y-3 text-xs text-slate-300 leading-relaxed">
+					<p>
+						This import added <strong class="text-white">{confirmDeleteBatch.committed_rows} transactions</strong> to your ledger. Removing it will also delete its uploaded file and AI search index.
+					</p>
+					<label class="flex items-start gap-2.5 p-3 rounded-xl bg-rose-500/8 border border-rose-500/25 cursor-pointer">
+						<input
+							type="checkbox"
+							bind:checked={deleteLedgerTxs}
+							class="mt-0.5 rounded border-slate-700"
+						/>
+						<span class="text-rose-200">
+							Also delete all <strong>{confirmDeleteBatch.committed_rows}</strong> imported transactions from my ledger and automatically recalculate the account balance.
+						</span>
+					</label>
+				</div>
+			{:else}
+				<p class="text-xs text-slate-300 leading-relaxed">
+					This will discard the pending import batch (<strong class="text-white">{confirmDeleteBatch.total_rows} staged rows</strong>) and remove the uploaded document. No committed ledger transactions exist for this batch.
+				</p>
+			{/if}
+
+			<div class="flex items-center justify-end gap-2.5 pt-1">
+				<button
+					type="button"
+					disabled={deletingBatch}
+					onclick={() => (confirmDeleteBatch = null)}
+					class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium cursor-pointer disabled:opacity-50"
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					disabled={deletingBatch}
+					onclick={handleConfirmDelete}
+					class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+				>
+					<Trash2 class="w-3.5 h-3.5" />
+					{#if deletingBatch}
+						Removing...
+					{:else if confirmDeleteBatch.status === 'committed' && deleteLedgerTxs}
+						Remove Import & {confirmDeleteBatch.committed_rows} Transactions
+					{:else}
+						Delete Import
+					{/if}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

@@ -1,12 +1,13 @@
 import base64
 import hashlib
+import logging
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from langgraph.types import Command
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from app.models.finance import Account, CategorizationRule, Category, Transactio
 from app.models.ingestion import ImportBatch, StagedTransaction, UploadedDocument
 from app.models.user import User
 from app.schemas.ingestion import (
+    DeleteImportBatchResponse,
     ImportBatchDetailResponse,
     ImportBatchResponse,
     ImportReviewCommitRequest,
@@ -35,6 +37,7 @@ from app.services.quota_service import (
 )
 from app.services.vector_service import VectorMemoryBackend
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/imports", tags=["AI Document Ingestion"])
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
@@ -556,3 +559,90 @@ async def commit_import_batch(
             )
 
     return await get_import_batch(batch.id, current_user=current_user, db=db)
+
+
+@router.delete("/{batch_id}", response_model=DeleteImportBatchResponse)
+async def delete_import_batch(
+    batch_id: UUID,
+    delete_transactions: bool = Query(
+        default=True,
+        description="Also remove all ledger transactions imported from this batch and recalculate account balance",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: StorageBackend = Depends(get_storage_dep),
+    vector_service: VectorMemoryBackend = Depends(get_vector_dep),
+) -> DeleteImportBatchResponse:
+    """Remove an import batch, optionally deleting its committed ledger transactions and recalculating balances."""
+    batch = await db.scalar(
+        select(ImportBatch)
+        .options(selectinload(ImportBatch.document))
+        .where(ImportBatch.id == batch_id, ImportBatch.user_id == current_user.id)
+    )
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import batch not found.")
+
+    doc = batch.document
+    doc_id = batch.document_id
+    storage_key = doc.storage_key if doc else None
+    primary_account_id = batch.account_id
+
+    deleted_tx_count = 0
+    affected_account_ids: set[UUID] = {primary_account_id}
+
+    if delete_transactions:
+        imported_txs = (
+            await db.scalars(
+                select(Transaction).where(
+                    Transaction.user_id == current_user.id,
+                    Transaction.source_document_id == doc_id,
+                )
+            )
+        ).all()
+        for tx in imported_txs:
+            affected_account_ids.add(tx.account_id)
+            await db.delete(tx)
+            deleted_tx_count += 1
+
+    await db.delete(batch)
+    await db.flush()
+
+    # Delete the underlying UploadedDocument if no other import batch references it
+    if doc is not None:
+        other_ref = await db.scalar(
+            select(ImportBatch.id).where(ImportBatch.document_id == doc_id).limit(1)
+        )
+        if other_ref is None:
+            await db.delete(doc)
+            await db.flush()
+        else:
+            storage_key = None  # keep file if another batch references it
+
+    new_balance: Decimal | None = None
+    for acc_id in affected_account_ids:
+        acc = await db.get(Account, acc_id)
+        if acc is not None and acc.user_id == current_user.id:
+            bal = await recalculate_account_balance(db, acc)
+            if acc.id == primary_account_id:
+                new_balance = bal
+
+    await db.commit()
+
+    # Best-effort external cleanup (Tigris S3 / local storage + Upstash Vector document chunks)
+    if storage_key:
+        try:
+            await storage.delete(storage_key)
+        except Exception as exc:
+            logger.warning("Failed to delete uploaded file '%s' from storage: %s", storage_key, exc)
+
+    try:
+        await vector_service.delete_document_chunks(current_user.id, doc_id)
+    except Exception as exc:
+        logger.warning("Failed to delete Upstash Vector chunks for doc %s: %s", doc_id, exc)
+
+    return DeleteImportBatchResponse(
+        deleted_batch_id=batch_id,
+        deleted_transactions=deleted_tx_count,
+        recalculated_account_id=primary_account_id,
+        new_account_balance=new_balance,
+    )

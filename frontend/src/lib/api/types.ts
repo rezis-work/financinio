@@ -160,6 +160,13 @@ export interface ImportBatchDetail extends ImportBatch {
 	staged_transactions: StagedTransaction[];
 }
 
+export interface DeleteImportBatchResponse {
+	deleted_batch_id: string;
+	deleted_transactions: number;
+	recalculated_account_id: string | null;
+	new_account_balance: string | null;
+}
+
 export interface SystemStatus {
 	database: string;
 	storage_backend: string;

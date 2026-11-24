@@ -240,7 +240,44 @@ async def test_dedicated_bog_pdf_import_endpoint_hitl_and_dedupe(
             files={"file": ("bog_statement_nov2026.pdf", fake_pdf_bytes, "application/pdf")},
         )
         assert up2.status_code == 201
-        assert up2.json()["duplicate_rows"] == 5
+        batch2 = up2.json()
+        assert batch2["duplicate_rows"] == 5
+
+        # 5. Discard uncommitted second batch -> 0 ledger transactions deleted
+        del_pending = await client.delete(
+            f"/api/v1/imports/{batch2['id']}",
+            headers=auth_headers,
+        )
+        assert del_pending.status_code == 200, del_pending.text
+        assert del_pending.json()["deleted_transactions"] == 0
+
+        # 6. Remove committed first batch & all its imported ledger transactions
+        del_committed = await client.delete(
+            f"/api/v1/imports/{batch['id']}?delete_transactions=true",
+            headers=auth_headers,
+        )
+        assert del_committed.status_code == 200, del_committed.text
+        del_body = del_committed.json()
+        assert del_body["deleted_transactions"] == 5
+        assert del_body["new_account_balance"] == "9.35"
+
+        # Account balance is restored to opening 9.35 and transactions are gone
+        accounts_after = (await client.get("/api/v1/accounts", headers=auth_headers)).json()
+        bog_acc_after = next(a for a in accounts_after if a["id"] == acc["id"])
+        assert bog_acc_after["current_balance"] == "9.35"
+
+        txs_after = (await client.get("/api/v1/transactions", headers=auth_headers)).json()
+        assert txs_after["total"] == 0
+
+        # Re-uploading the same PDF now sees 0 duplicates (clean re-import possible)
+        up3 = await client.post(
+            "/api/v1/imports/bog",
+            headers=auth_headers,
+            data={"account_id": acc["id"]},
+            files={"file": ("bog_statement_nov2026.pdf", fake_pdf_bytes, "application/pdf")},
+        )
+        assert up3.status_code == 201
+        assert up3.json()["duplicate_rows"] == 0
 
 
 def test_parse_bog_pdf_strict_rejects_non_bog_text() -> None:

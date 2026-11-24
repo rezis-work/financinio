@@ -60,6 +60,8 @@ class VectorMemoryBackend(Protocol):
         self, user_id: UUID, query_text: str, top_k: int = 4
     ) -> list[DocumentSearchMatch]: ...
 
+    async def delete_document_chunks(self, user_id: UUID, document_id: UUID) -> None: ...
+
     async def remember_user_fact(
         self, user_id: UUID, fact: str, category: str = "preference"
     ) -> UserFactMatch: ...
@@ -235,6 +237,17 @@ class UpstashVectorService:
         except Exception as exc:  # pragma: no cover
             logger.warning("Upstash Vector document search failed: %s", exc)
             return []
+
+    async def delete_document_chunks(self, user_id: UUID, document_id: UUID) -> None:
+        if not self.enabled:
+            return
+        try:
+            await self._index.delete(  # type: ignore[union-attr]
+                prefix=f"{document_id}:",
+                namespace=self._document_ns(user_id),
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Upstash Vector delete_document_chunks failed: %s", exc)
 
     async def remember_user_fact(
         self, user_id: UUID, fact: str, category: str = "preference"
