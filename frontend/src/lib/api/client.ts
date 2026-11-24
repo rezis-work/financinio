@@ -388,6 +388,20 @@ export const api = {
 		color?: string;
 	}) => request<FinancialGoal>('/wealth/goals', { method: 'POST', body: JSON.stringify(payload) }),
 
+	updateGoal: (
+		id: string,
+		payload: Partial<{
+			name: string;
+			goal_type: GoalType;
+			target_amount: string;
+			current_amount: string;
+			monthly_contribution: string;
+			target_date: string | null;
+			color: string;
+			is_completed: boolean;
+		}>
+	) => request<FinancialGoal>(`/wealth/goals/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
 	contributeGoal: (id: string, amount: string) =>
 		request<FinancialGoal>(`/wealth/goals/${id}/contribute`, {
 			method: 'POST',
