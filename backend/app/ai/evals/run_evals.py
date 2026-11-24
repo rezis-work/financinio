@@ -18,6 +18,7 @@ from app.ai.observability import redact_pii
 from app.ai.parsers.tabular import parse_tabular_statement
 from app.schemas.planning import DebtInput, DebtPayoffRequest
 from app.services.auth_service import DEFAULT_CATEGORIES
+from app.services.financial_health_service import evaluate_purchase_decision
 from app.services.planning_service import simulate_debt_payoff
 
 
@@ -54,6 +55,9 @@ ROUTING_GOLDEN: list[tuple[str, str]] = [
     ("Set an Emergency Fund goal of $10000", "action_proposer"),
     ("Remember that I plan to buy a home in 2027", "document_rag"),
     ("What if I cut expenses by $200/mo?", "wealth_strategist"),
+    ("Can I afford a $1,500 laptop right now?", "decision_advisor"),
+    ("Give me a full financial health checkup", "decision_advisor"),
+    ("Where am I wasting money and how can I save more?", "decision_advisor"),
     ("What is the 50/30/20 rule?", "general"),
 ]
 
@@ -137,7 +141,42 @@ def eval_advisor_routing_and_math() -> EvalSuiteResult:
     else:
         details.append("FAIL math groundedness: Avalanche did not beat Snowball on high-APR larger debt")
 
-    return EvalSuiteResult("advisor_routing_and_math", passed, len(ROUTING_GOLDEN) + 1, details)
+    # Deterministic Senior CFP affordability checks
+    tight_profile = {
+        "base_currency": "USD",
+        "balance_sheet": {"liquid_cash": "1000.00", "credit_card_debt": "0.00"},
+        "cash_flow_ratios": {
+            "avg_monthly_income": "4000.00",
+            "avg_monthly_expenses": "3800.00",
+            "avg_monthly_surplus": "200.00",
+        },
+    }
+    strong_profile = {
+        "base_currency": "USD",
+        "balance_sheet": {"liquid_cash": "20000.00", "credit_card_debt": "0.00"},
+        "cash_flow_ratios": {
+            "avg_monthly_income": "6000.00",
+            "avg_monthly_expenses": "2500.00",
+            "avg_monthly_surplus": "3500.00",
+        },
+    }
+    eval_hold = evaluate_purchase_decision(tight_profile, amount=Decimal("1500.00"))
+    eval_ok = evaluate_purchase_decision(strong_profile, amount=Decimal("800.00"))
+    eval_rec_hold = evaluate_purchase_decision(
+        tight_profile, amount=Decimal("500.00"), is_recurring_monthly=True
+    )
+
+    if eval_hold["verdict"] == "HOLD_OFF" and Decimal(eval_hold["five_year_opportunity_cost_at_7pct"]) > Decimal("1500"):
+        passed += 1
+    else:
+        details.append(f"FAIL affordability HOLD_OFF check: got {eval_hold}")
+
+    if eval_ok["verdict"] == "AFFORDABLE" and eval_rec_hold["verdict"] == "HOLD_OFF":
+        passed += 1
+    else:
+        details.append(f"FAIL affordability strong/recurring check: ok={eval_ok['verdict']} rec={eval_rec_hold['verdict']}")
+
+    return EvalSuiteResult("advisor_routing_and_math", passed, len(ROUTING_GOLDEN) + 3, details)
 
 
 def eval_pii_redaction() -> EvalSuiteResult:

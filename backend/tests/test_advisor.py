@@ -144,3 +144,78 @@ async def test_user_memories_and_proactive_insights(
         types = {i["insight_type"] for i in insights}
         assert "weekly_digest" in types
         assert "anomaly" in types
+
+
+@pytest.mark.asyncio
+async def test_senior_cfp_health_score_and_decision_advisor(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    with patch("app.ai.graphs.advisor_graph.get_chat_model", return_value=None):
+        # Seed healthy checking account + monthly income & expenses
+        acc = (
+            await client.post(
+                "/api/v1/accounts",
+                headers=auth_headers,
+                json={
+                    "name": "Main Checking",
+                    "type": "checking",
+                    "currency": "USD",
+                    "initial_balance": "12000.00",
+                },
+            )
+        ).json()
+        today = date.today()
+        await client.post(
+            "/api/v1/transactions",
+            headers=auth_headers,
+            json={
+                "account_id": acc["id"],
+                "amount": "5500.00",
+                "direction": "inflow",
+                "occurred_at": (today - timedelta(days=5)).isoformat(),
+                "merchant": "Acme Payroll",
+            },
+        )
+        await client.post(
+            "/api/v1/transactions",
+            headers=auth_headers,
+            json={
+                "account_id": acc["id"],
+                "amount": "2200.00",
+                "direction": "outflow",
+                "occurred_at": (today - timedelta(days=3)).isoformat(),
+                "merchant": "Apartment Rent",
+            },
+        )
+
+        # 1. Verify Financial Health Score endpoint
+        hs_resp = await client.get("/api/v1/advisor/health-score", headers=auth_headers)
+        assert hs_resp.status_code == 200, hs_resp.text
+        profile = hs_resp.json()
+        assert 0 <= profile["health_score"]["overall"] <= 100
+        assert set(profile["health_score"]["pillars"].keys()) == {
+            "cash_flow_and_savings",
+            "emergency_runway",
+            "debt_health",
+            "budget_and_goals",
+        }
+        assert profile["health_score"]["top_priority"]
+        assert profile["cash_flow_ratios"]["savings_rate_pct"] > 0
+
+        # 2. Stream a Senior CFP purchase affordability decision
+        th = (
+            await client.post("/api/v1/advisor/threads", headers=auth_headers, json={})
+        ).json()
+        resp = await client.post(
+            f"/api/v1/advisor/threads/{th['id']}/stream",
+            headers=auth_headers,
+            json={"message": "Can I afford a $1,200 laptop right now?"},
+        )
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+        done_msg = next(p["message"] for name, p in events if name == "done")
+        assert done_msg["active_agent"] == "decision_advisor"
+        citation_sources = {c["source"] for c in done_msg["citations"]}
+        assert "Senior CFP Diagnostic" in citation_sources
+        assert "Affordability Engine" in citation_sources
+        assert "AFFORDABLE" in done_msg["content"] or "Verdict" in done_msg["content"]

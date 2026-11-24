@@ -19,6 +19,7 @@ import type {
 	DebtPayoffComparison,
 	DetectRecurringResponse,
 	FinancialGoal,
+	FinancialHealthProfile,
 	GoalType,
 	ImportBatch,
 	ImportBatchDetail,
@@ -400,6 +401,7 @@ export const api = {
 		request<ProactiveInsight[]>('/advisor/insights/generate', { method: 'POST' }),
 	dismissInsight: (insightId: string) =>
 		request<void>(`/advisor/insights/${insightId}/dismiss`, { method: 'PATCH' }),
+	financialHealthScore: () => request<FinancialHealthProfile>('/advisor/health-score'),
 
 	streamAdvisorMessage: async (
 		threadId: string,

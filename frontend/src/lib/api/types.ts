@@ -395,6 +395,76 @@ export interface ProactiveInsight {
 	created_at: string;
 }
 
+export interface FinancialHealthPillar {
+	score: number;
+	max: number;
+}
+
+export interface FinancialHealthProfile {
+	as_of: string;
+	base_currency: string;
+	health_score: {
+		overall: number;
+		grade: string;
+		pillars: {
+			cash_flow_and_savings: FinancialHealthPillar;
+			emergency_runway: FinancialHealthPillar;
+			debt_health: FinancialHealthPillar;
+			budget_and_goals: FinancialHealthPillar;
+		};
+		top_priority: string;
+	};
+	balance_sheet: {
+		liquid_cash: string;
+		invested_assets: string;
+		total_assets: string;
+		total_debt: string;
+		credit_card_debt: string;
+		net_worth: string;
+	};
+	cash_flow_ratios: {
+		months_analyzed: number;
+		avg_monthly_income: string;
+		avg_monthly_expenses: string;
+		avg_monthly_surplus: string;
+		savings_rate_pct: number;
+		emergency_runway_months: number;
+		fixed_recurring_ratio_pct: number;
+		monthly_recurring_burn: string;
+		safe_to_spend_remaining_this_month: string;
+		mtd_income: string;
+		mtd_expenses: string;
+		prev_month_expenses: string;
+	};
+	spending_leaks_mom: Array<{
+		category: string;
+		current_month: string;
+		previous_month: string;
+		increase_pct: number;
+	}>;
+	top_categories_90d: Record<string, string>;
+	frequent_merchants_90d: Array<{
+		merchant: string;
+		total_90d: string;
+		visits_90d: number;
+		monthly_avg: string;
+	}>;
+	over_budget_categories: Array<{
+		category: string;
+		spent: string;
+		limit: string;
+		percent_used: number;
+	}>;
+	subscription_price_hikes: Array<{
+		merchant: string;
+		previous: string | null;
+		current: string;
+		increase_pct: string;
+	}>;
+	active_goals_count: number;
+	total_goal_monthly_commitment: string;
+}
+
 // --- Phase 5: Audit Logs & Privacy ---
 
 export interface AuditLog {

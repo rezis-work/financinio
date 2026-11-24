@@ -23,6 +23,10 @@ from app.models.ingestion import UploadedDocument
 from app.models.planning import Budget, FinancialGoal
 from app.models.user import User
 from app.schemas.planning import DebtInput, DebtPayoffRequest, WhatIfRequest
+from app.services.financial_health_service import (
+    compute_financial_health_profile,
+    evaluate_purchase_decision,
+)
 from app.services.planning_service import (
     enrich_goal,
     get_budget_overview,
@@ -36,6 +40,7 @@ from app.services.vector_service import VectorMemoryBackend, get_vector_service
 logger = logging.getLogger(__name__)
 
 RouteName = Literal[
+    "decision_advisor",
     "ledger_analyst",
     "document_rag",
     "wealth_strategist",
@@ -60,11 +65,13 @@ class AdvisorState(TypedDict, total=False):
 class RouteDecision(BaseModel):
     route: RouteName = Field(
         description=(
-            "Choose 'action_proposer' if the user asks to create/set/add a budget, financial goal, or categorization rule. "
-            "Choose 'document_rag' if the user asks to find/search an uploaded receipt, PDF statement, invoice, or asks you to remember a personal preference/fact. "
-            "Choose 'wealth_strategist' if the user asks about net worth, financial goals progress, debt payoff (snowball/avalanche), or what-if cash flow scenarios. "
-            "Choose 'ledger_analyst' if the user asks about spending, income, transactions, merchants, account balances, budgets, or recurring bills/subscriptions. "
-            "Choose 'general' for general personal finance advice not requiring ledger lookup."
+            "Choose 'action_proposer' ONLY if the user explicitly asks to create/set/add a budget, financial goal, or categorization rule in the app. "
+            "Choose 'decision_advisor' if the user asks for spending advice, affordability ('can I afford...', 'should I buy...'), "
+            "financial checkup/audit/health score, where they are wasting/leaking money, how to save more, or prioritizing debt vs savings vs investing. "
+            "Choose 'document_rag' if the user asks to find/search an uploaded receipt, PDF statement, invoice, warranty, or asks you to remember a personal preference/fact. "
+            "Choose 'wealth_strategist' if the user specifically asks about net worth history, financial goals progress, Snowball vs Avalanche debt payoff math, or What-If cash flow projections. "
+            "Choose 'ledger_analyst' if the user asks factual lookups about spending totals, income, specific transactions, merchants, account balances, budgets, or recurring bills. "
+            "Choose 'general' for conceptual personal finance questions that do not need personal account analysis."
         )
     )
     reasoning: str = Field(description="Brief one-sentence routing explanation")
@@ -74,29 +81,28 @@ class ProposedActionSchema(BaseModel):
     action_type: Literal["create_budget", "create_goal", "create_rule"]
     title: str = Field(description="Short action card title, e.g., 'Create Monthly Groceries Budget'")
     summary: str = Field(description="Clear human-readable summary of what will be saved")
-    # create_budget params
     category_name: str | None = None
     amount: float | None = Field(default=None, gt=0)
     rollover: bool = False
-    # create_goal params
     goal_name: str | None = None
     goal_type: Literal[
         "emergency_fund", "savings", "debt_payoff", "investment", "purchase", "retirement"
     ] = "savings"
     target_amount: float | None = Field(default=None, gt=0)
     monthly_contribution: float = 0.0
-    # create_rule params
     match_pattern: str | None = None
     merchant_override: str | None = None
 
 
-LUNA_SYSTEM_GUARDRAILS = (
-    "You are Luna, Financinio's AI personal finance advisor. "
-    "Rules:\n"
-    "1. Use ONLY the exact numbers provided in the Verified Financial Context — NEVER invent or guess dollar amounts.\n"
-    "2. Format numbers cleanly with currency symbols and keep responses structured, actionable, and concise (markdown bullets/tables).\n"
-    "3. You provide financial organization and educational planning insights, NOT licensed investment, legal, or tax advice.\n"
-    "4. If the user's ledger has no data yet for a question, say so clearly and suggest importing a statement or adding an account."
+LUNA_SENIOR_CFO_PROMPT = (
+    "You are Luna, Financinio's Senior Financial Advisor & Personal CFO (CFP-grade analytical rigor, warm and decisive coaching style).\n\n"
+    "CORE OPERATING PRINCIPLES:\n"
+    "1. **Lead with the Bottom Line**: Open with a clear 1-2 sentence verdict or executive takeaway (e.g., **Verdict: Affordable**, **Proceed with Caution**, or **Hold Off** for purchase decisions; or the single biggest lever for spending/savings questions).\n"
+    "2. **100% Grounded Numbers**: Use ONLY exact verified figures from the Financial Context JSON below. NEVER fabricate balances, transactions, APRs, or percentages. If a metric is zero or missing because the user hasn't imported data yet, say so transparently and tell them what to add.\n"
+    "3. **Clean Visual Structure**: Use clean Markdown — short headings (`###`), crisp bullet points, bold key figures, and compact Markdown tables when comparing options, categories, or before/after impacts.\n"
+    "4. **Senior Advisory Depth**: Don't just report raw totals — diagnose *why* (emergency runway impact, savings rate vs. 20% benchmark, fixed obligations vs. 50% benchmark, high-APR drag, 5-year opportunity cost, month-over-month leaks) and give concrete trade-offs and smart alternatives.\n"
+    "5. **Actionable Next Steps**: Close with 2–3 specific, numbered next steps. When appropriate, offer to create a budget, savings goal, or categorization rule right in chat (e.g., *'Say \"Create a $350 Dining budget\" and I'll set it up for your approval.'*).\n"
+    "6. **Professional Guardrail**: Keep guidance objective and educational — you are an AI personal finance advisor & planner, not a licensed CPA, tax attorney, or registered investment fiduciary."
 )
 
 
@@ -113,6 +119,33 @@ def _heuristic_route(text: str) -> RouteName:
     has_action_noun = any(n in low for n in ("budget", "goal", "rule"))
     if has_write_verb and has_action_noun:
         return "action_proposer"
+    if any(
+        k in low
+        for k in (
+            "can i afford",
+            "should i buy",
+            "should i spend",
+            "should i get",
+            "should i pay",
+            "worth buying",
+            "afford a",
+            "afford to",
+            "health score",
+            "checkup",
+            "financial review",
+            "financial audit",
+            "wasting money",
+            "leaking money",
+            "spending leaks",
+            "cut back",
+            "how can i save",
+            "what should i do with",
+            "priorities",
+            "advice on my spending",
+            "decision",
+        )
+    ):
+        return "decision_advisor"
     if any(
         k in low
         for k in ("receipt", "statement pdf", "uploaded document", "invoice", "warranty", "remember that", "remember my")
@@ -146,6 +179,28 @@ def _heuristic_route(text: str) -> RouteName:
     ):
         return "ledger_analyst"
     return "general"
+
+
+def _extract_purchase_amount(text: str) -> tuple[Decimal | None, bool]:
+    """Extract a monetary amount and whether it's a recurring monthly cost from a user question."""
+    low = text.lower()
+    is_monthly = any(
+        k in low for k in ("/mo", "per month", "a month", "monthly", "every month", "each month")
+    )
+    # Prefer currency-prefixed numbers ($1,500 or 1500 USD) or plain numbers >= 10
+    m = re.search(r"(?:[$€£]|usd|eur|gbp|gel)\s*(\d[\d,]*(?:\.\d{1,2})?)", text, flags=re.IGNORECASE)
+    if not m:
+        m = re.search(r"\b(\d{2,}(?:,\d{3})*(?:\.\d{1,2})?)\b", text)
+    if not m:
+        return None, is_monthly
+    raw_num = m.group(1).replace(",", "")
+    try:
+        val = Decimal(raw_num)
+        if val > 0:
+            return val.quantize(Decimal("0.01")), is_monthly
+    except Exception:
+        pass
+    return None, is_monthly
 
 
 async def _gather_ledger_context(db: AsyncSession, user: User) -> tuple[dict[str, Any], list[dict]]:
@@ -196,10 +251,19 @@ async def _gather_ledger_context(db: AsyncSession, user: User) -> tuple[dict[str
 
     budgets = await get_budget_overview(db, user)
     recurring = await get_recurring_overview(db, user)
+    health = await compute_financial_health_profile(db, user)
 
     context = {
         "as_of": today.isoformat(),
         "base_currency": user.base_currency,
+        "financial_health_snapshot": {
+            "score": health["health_score"]["overall"],
+            "grade": health["health_score"]["grade"],
+            "savings_rate_pct": health["cash_flow_ratios"]["savings_rate_pct"],
+            "emergency_runway_months": health["cash_flow_ratios"]["emergency_runway_months"],
+            "safe_to_spend_remaining": health["cash_flow_ratios"]["safe_to_spend_remaining_this_month"],
+            "top_priority": health["health_score"]["top_priority"],
+        },
         "accounts": [
             {
                 "name": a.name,
@@ -257,8 +321,8 @@ async def _gather_ledger_context(db: AsyncSession, user: User) -> tuple[dict[str
             "label": f"{len(accounts)} accounts · {len(txs)} transactions (90d)",
         },
         {
-            "source": "Budgets & Recurring",
-            "label": f"{len(budgets.budgets)} active budgets · {len(recurring.items)} recurring items",
+            "source": "CFP Health Engine",
+            "label": f"Score {health['health_score']['overall']}/100 · {health['cash_flow_ratios']['emergency_runway_months']} mo runway",
         },
     ]
     return context, citations
@@ -268,6 +332,7 @@ async def _gather_wealth_context(
     db: AsyncSession, user: User, query_text: str
 ) -> tuple[dict[str, Any], list[dict]]:
     nw = await get_net_worth_overview(db, user)
+    health = await compute_financial_health_profile(db, user)
     goals = (
         await db.scalars(select(FinancialGoal).where(FinancialGoal.user_id == user.id))
     ).all()
@@ -275,6 +340,8 @@ async def _gather_wealth_context(
 
     context: dict[str, Any] = {
         "base_currency": user.base_currency,
+        "health_score": health["health_score"],
+        "cash_flow_ratios": health["cash_flow_ratios"],
         "net_worth": {
             "assets": f"{nw.current_assets:.2f}",
             "liabilities": f"{nw.current_liabilities:.2f}",
@@ -304,7 +371,6 @@ async def _gather_wealth_context(
         {"source": "Goals Tracker", "label": f"{len(enriched_goals)} financial goals"},
     ]
 
-    # Deterministic Debt Payoff simulation if user has liability accounts & asks about debt
     liabilities = [a for a in nw.accounts if a.classification == "liability" and abs(a.balance) > 0]
     if liabilities and any(k in query_text.lower() for k in ("debt", "snowball", "avalanche", "payoff", "loan", "credit")):
         debt_inputs = [
@@ -331,12 +397,9 @@ async def _gather_wealth_context(
         }
         citations.append({"source": "Deterministic Debt Simulator", "label": "Snowball vs. Avalanche (Python Engine)"})
 
-    # Deterministic What-If sample if asked
     if any(k in query_text.lower() for k in ("what if", "what-if", "cut", "save more", "raise", "runway")):
-        ledger_ctx, _ = await _gather_ledger_context(db, user)
-        mtd_inc = Decimal(ledger_ctx["month_to_date"]["income"])
-        mtd_exp = Decimal(ledger_ctx["month_to_date"]["expenses"])
-        # Extract any dollar delta mentioned in user prompt (e.g., "$200")
+        mtd_inc = Decimal(health["cash_flow_ratios"]["avg_monthly_income"])
+        mtd_exp = Decimal(health["cash_flow_ratios"]["avg_monthly_expenses"])
         m_amt = re.search(r"\$?\s*(\d+(?:\.\d{1,2})?)", query_text)
         delta = Decimal(m_amt.group(1)) if m_amt else Decimal("250.00")
         is_cut = any(w in query_text.lower() for w in ("cut", "reduce", "less", "save"))
@@ -523,7 +586,7 @@ def build_advisor_graph(
     llm: BaseChatModel | None = None,
     vector_service: VectorMemoryBackend | None = None,
 ):
-    """Build Luna — Financinio's multi-agent LangGraph financial advisor."""
+    """Build Luna — Financinio's Senior Financial Advisor multi-agent LangGraph system."""
     vec = vector_service if vector_service is not None else get_vector_service()
     model = llm if llm is not None else get_chat_model("fast", temperature=0.2)
 
@@ -547,7 +610,7 @@ def build_advisor_graph(
                 decision: RouteDecision = await router_llm.ainvoke(  # type: ignore[assignment]
                     [
                         SystemMessage(
-                            content="You are the Supervisor Router for Luna, a personal finance AI advisor. Pick the best specialist agent."
+                            content="You are the Supervisor Router for Luna, a Senior Personal Finance Advisor & CFO. Pick the best specialist agent."
                         ),
                         HumanMessage(content=query),
                     ]
@@ -557,6 +620,89 @@ def build_advisor_graph(
                 logger.warning("Supervisor router LLM failed, using heuristic: %s", exc)
         return {"route": route, "active_agent": route}
 
+    async def decision_advisor_node(state: AdvisorState) -> dict[str, Any]:
+        """Senior CFP Decision Specialist: affordability, spending leaks, trade-offs & checkups."""
+        query = _last_user_text(state.get("messages", []))
+        profile = await compute_financial_health_profile(db, user)
+        memories = state.get("recalled_memories", [])
+        citations = [
+            {
+                "source": "Senior CFP Diagnostic",
+                "label": f"Health Score {profile['health_score']['overall']}/100 ({profile['health_score']['grade']})",
+            },
+            {
+                "source": "Cash Flow & Runway",
+                "label": f"Savings {profile['cash_flow_ratios']['savings_rate_pct']}% · Runway {profile['cash_flow_ratios']['emergency_runway_months']} mo",
+            },
+        ]
+
+        # Run deterministic affordability engine whenever a purchase amount is mentioned
+        purchase_eval: dict[str, Any] | None = None
+        if any(
+            k in query.lower()
+            for k in ("afford", "buy", "purchase", "spend", "trip", "car", "laptop", "phone", "rent", "lease", "cost")
+        ):
+            amt, is_monthly = _extract_purchase_amount(query)
+            if amt is not None:
+                purchase_eval = evaluate_purchase_decision(
+                    profile, amount=amt, is_recurring_monthly=is_monthly
+                )
+                citations.append(
+                    {
+                        "source": "Affordability Engine",
+                        "label": f"Verdict: {purchase_eval['verdict'].replace('_', ' ')}",
+                    }
+                )
+
+        payload = {
+            "financial_health_profile": profile,
+            "purchase_affordability_analysis": purchase_eval,
+        }
+
+        if model is not None:
+            sys_prompt = (
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                f"Active Specialist: **Senior CFP Decision Advisor**.\n"
+                f"Remembered User Preferences/Goals: {memories}\n"
+                f"Verified Diagnostic & Decision Data (JSON):\n{json.dumps(payload, indent=2)}\n\n"
+                "Deliver an executive-grade advisory response:\n"
+                "- Open with a clear **Verdict / Executive Takeaway**.\n"
+                "- Include a clean Markdown table of the exact key numbers (e.g., Health Score pillars, or Before vs. After purchase impact & 5-year opportunity cost).\n"
+                "- Call out concrete **spending leaks, trade-offs, and smarter alternatives**.\n"
+                "- End with 2–3 prioritized, measurable next actions."
+            )
+            resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
+            answer = str(resp.content)
+        else:
+            hs = profile["health_score"]
+            cf = profile["cash_flow_ratios"]
+            lines = [
+                f"### Financial Health Checkup — **{hs['overall']}/100 ({hs['grade']})**",
+                "",
+                f"**Top Priority:** {hs['top_priority']}",
+                "",
+                "| Metric | Value |",
+                "| :--- | ---: |",
+                f"| Savings Rate | {cf['savings_rate_pct']}% |",
+                f"| Emergency Runway | {cf['emergency_runway_months']} months |",
+                f"| Avg Monthly Surplus | {user.base_currency} {cf['avg_monthly_surplus']} |",
+                f"| Safe-to-Spend Remaining | {user.base_currency} {cf['safe_to_spend_remaining_this_month']} |",
+            ]
+            if purchase_eval:
+                lines += [
+                    "",
+                    f"### Purchase Verdict: **{purchase_eval['verdict'].replace('_', ' ')}**",
+                    f"- {purchase_eval['reasons'][0]}",
+                    f"- 5-Year Opportunity Cost (at 7%): `{user.base_currency} {purchase_eval['five_year_opportunity_cost_at_7pct']}`",
+                ]
+            answer = "\n".join(lines)
+
+        return {
+            "messages": [AIMessage(content=answer)],
+            "active_agent": "decision_advisor",
+            "citations": citations,
+        }
+
     async def ledger_analyst_node(state: AdvisorState) -> dict[str, Any]:
         query = _last_user_text(state.get("messages", []))
         context, citations = await _gather_ledger_context(db, user)
@@ -564,21 +710,22 @@ def build_advisor_graph(
 
         if model is not None:
             sys_prompt = (
-                f"{LUNA_SYSTEM_GUARDRAILS}\n\n"
-                f"Active Specialist: Ledger Analyst.\n"
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                f"Active Specialist: **Senior Ledger & Cash Flow Analyst**.\n"
                 f"Remembered User Facts: {memories}\n"
-                f"Verified Financial Context (JSON):\n{json.dumps(context, indent=2)}"
+                f"Verified Financial Context (JSON):\n{json.dumps(context, indent=2)}\n\n"
+                "Answer with precision AND add one proactive CFO insight (e.g., category concentration, pacing, or a concrete savings opportunity)."
             )
             resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
             answer = str(resp.content)
         else:
             mtd = context["month_to_date"]
             answer = (
-                f"**Month-to-Date Snapshot ({user.base_currency})**:\n"
-                f"- Income: `{mtd['income']}`\n"
-                f"- Expenses: `{mtd['expenses']}`\n"
-                f"- Net Cash Flow: `{mtd['net']}`\n"
-                f"- Active Accounts: {len(context['accounts'])}\n\n"
+                f"### Month-to-Date Snapshot ({user.base_currency})\n\n"
+                f"- **Income:** `{mtd['income']}`\n"
+                f"- **Expenses:** `{mtd['expenses']}`\n"
+                f"- **Net Cash Flow:** `{mtd['net']}`\n"
+                f"- **Active Accounts:** {len(context['accounts'])}\n\n"
                 f"*(Configure an LLM API key in `.env` for richer natural-language analysis on: \"{query}\")*"
             )
 
@@ -593,7 +740,6 @@ def build_advisor_graph(
         citations: list[dict[str, Any]] = []
         saved_fact: str | None = None
 
-        # Detect explicit memory save requests ("remember that I'm saving for...")
         if any(k in query.lower() for k in ("remember that", "remember my", "save to memory", "note that i")):
             fact_item = await vec.remember_user_fact(user.id, query, category="user_note")
             saved_fact = fact_item.fact
@@ -608,7 +754,6 @@ def build_advisor_graph(
                 }
             )
 
-        # Fallback metadata lookup from Neon uploaded_documents if vector has 0 results
         neon_docs = (
             await db.scalars(
                 select(UploadedDocument)
@@ -637,8 +782,8 @@ def build_advisor_graph(
 
         if model is not None:
             sys_prompt = (
-                f"{LUNA_SYSTEM_GUARDRAILS}\n\n"
-                f"Active Specialist: Document & Memory RAG Agent (Upstash Vector).\n"
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                f"Active Specialist: **Document & Memory RAG Agent (Upstash Vector)**.\n"
                 f"Retrieved Documents & Memory Context:\n{json.dumps(rag_context, indent=2)}"
             )
             resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-6:]])
@@ -665,21 +810,22 @@ def build_advisor_graph(
 
         if model is not None:
             sys_prompt = (
-                f"{LUNA_SYSTEM_GUARDRAILS}\n\n"
-                f"Active Specialist: Wealth & Goals Strategist (backed by deterministic Python simulators).\n"
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                f"Active Specialist: **Senior Wealth & Debt Strategist** (backed by deterministic Python simulators).\n"
                 f"Remembered User Facts: {memories}\n"
-                f"Verified Wealth & Simulation Data:\n{json.dumps(context, indent=2)}"
+                f"Verified Wealth & Simulation Data:\n{json.dumps(context, indent=2)}\n\n"
+                "Present clear strategy comparisons (e.g., Snowball vs. Avalanche table, timeline, interest saved) and explain the trade-offs."
             )
             resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
             answer = str(resp.content)
         else:
             nw = context["net_worth"]
             answer = (
-                f"**Wealth Snapshot ({user.base_currency})**:\n"
-                f"- Total Assets: `{nw['assets']}`\n"
-                f"- Total Liabilities: `{nw['liabilities']}`\n"
-                f"- **Net Worth**: `{nw['net_worth']}`\n"
-                f"- Active Goals: {len(context['goals'])}"
+                f"### Wealth Snapshot ({user.base_currency})\n\n"
+                f"- **Total Assets:** `{nw['assets']}`\n"
+                f"- **Total Liabilities:** `{nw['liabilities']}`\n"
+                f"- **Net Worth:** `{nw['net_worth']}`\n"
+                f"- **Active Goals:** {len(context['goals'])}"
             )
 
         return {
@@ -718,7 +864,6 @@ def build_advisor_graph(
         else:
             proposal = _heuristic_extract_action(query, cat_names)
 
-        # Pause graph via LangGraph interrupt() so user approves/rejects in SvelteKit!
         decision = interrupt(
             {
                 "type": "hitl_action_approval",
@@ -740,12 +885,11 @@ def build_advisor_graph(
                 "executed_result": None,
             }
 
-        # Apply any optional parameter overrides from user
         final_params = {**proposal, **(decision.get("override_params") or {})}
         result = await _execute_action_in_neon(db, user, final_params)
 
         confirm_text = (
-            f"Done! I executed **{final_params.get('title', 'your action')}** and saved it to your Neon ledger.\n\n"
+            f"Done! I executed **{final_params.get('title', 'your action')}** and saved it to your ledger.\n\n"
             f"- Details: `{json.dumps(result)}`"
         )
         return {
@@ -759,18 +903,21 @@ def build_advisor_graph(
 
     async def general_coach_node(state: AdvisorState) -> dict[str, Any]:
         memories = state.get("recalled_memories", [])
+        health = await compute_financial_health_profile(db, user)
         if model is not None:
             sys_prompt = (
-                f"{LUNA_SYSTEM_GUARDRAILS}\n\n"
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
                 f"Remembered User Facts: {memories}\n"
-                "Answer warmly, clearly, and practically."
+                f"User Quick Context (for personalizing advice when relevant):\n"
+                f"{json.dumps({'health_score': health['health_score'], 'cash_flow_ratios': health['cash_flow_ratios']}, indent=2)}\n\n"
+                "Give practical, senior-level financial guidance tailored to their situation."
             )
             resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
             answer = str(resp.content)
         else:
             answer = (
-                "Hi! I'm **Luna**, your Financinio AI advisor. Ask me about your spending, "
-                "budgets, subscriptions, net worth, uploaded receipts, or ask me to create a budget or goal for you!"
+                "Hi! I'm **Luna**, your Senior Financial Advisor. Ask me whether you can afford a purchase, "
+                "for a full Financial Health Checkup, to find spending leaks, or to create a budget or goal!"
             )
         return {
             "messages": [AIMessage(content=answer)],
@@ -784,6 +931,7 @@ def build_advisor_graph(
     graph = StateGraph(AdvisorState)
     graph.add_node("recall_memory", recall_memory_node)
     graph.add_node("supervisor_router", supervisor_router_node)
+    graph.add_node("decision_advisor", decision_advisor_node)
     graph.add_node("ledger_analyst", ledger_analyst_node)
     graph.add_node("document_rag", document_rag_node)
     graph.add_node("wealth_strategist", wealth_strategist_node)
@@ -796,6 +944,7 @@ def build_advisor_graph(
         "supervisor_router",
         route_selector,
         {
+            "decision_advisor": "decision_advisor",
             "ledger_analyst": "ledger_analyst",
             "document_rag": "document_rag",
             "wealth_strategist": "wealth_strategist",
@@ -803,6 +952,7 @@ def build_advisor_graph(
             "general": "general",
         },
     )
+    graph.add_edge("decision_advisor", END)
     graph.add_edge("ledger_analyst", END)
     graph.add_edge("document_rag", END)
     graph.add_edge("wealth_strategist", END)

@@ -8,6 +8,7 @@
 	import type {
 		ChatMessage,
 		ChatThread,
+		FinancialHealthProfile,
 		ProactiveInsight,
 		UserMemoryItem
 	} from '$lib/api/types';
@@ -29,7 +30,8 @@
 		Check,
 		PanelLeft,
 		X,
-		ArrowDown
+		ArrowDown,
+		ShieldCheck
 	} from 'lucide-svelte';
 
 	let sideTab = $state<'chats' | 'insights' | 'memory'>('chats');
@@ -41,6 +43,7 @@
 	let messages = $state<ChatMessage[]>([]);
 	let insights = $state<ProactiveInsight[]>([]);
 	let memories = $state<UserMemoryItem[]>([]);
+	let healthProfile = $state<FinancialHealthProfile | null>(null);
 
 	let inputText = $state('');
 	let streaming = $state(false);
@@ -58,27 +61,27 @@
 
 	const STARTER_PROMPTS = [
 		{
-			title: 'Monthly Spending Breakdown',
-			prompt: 'How much did I spend this month and what are my top categories?'
+			title: 'Senior Financial Health Checkup',
+			prompt: 'Run a full Senior Financial Advisor checkup on my finances and give me my top 3 priorities'
 		},
 		{
-			title: 'Debt Payoff Comparison',
-			prompt: 'Compare Snowball vs Avalanche payoff on my debts'
+			title: 'Can I Afford This Purchase?',
+			prompt: 'Can I afford a $1,200 purchase right now? Show my runway impact & 5-year opportunity cost'
 		},
 		{
-			title: 'Create a Smart Budget',
-			prompt: 'Create a monthly Dining & Coffee budget of $350'
+			title: 'Find Spending Leaks',
+			prompt: 'Where am I leaking money and how can I boost my savings rate?'
 		},
 		{
-			title: '12-Month What-If Projection',
-			prompt: 'What if I cut expenses by $250/mo for the next 12 months?'
+			title: 'Debt vs. Savings Strategy',
+			prompt: 'Compare Snowball vs Avalanche on my debts and tell me what to prioritize first'
 		}
 	];
 
 	const QUICK_FOLLOWUPS = [
-		'Break this down in a table',
-		'What are my top 3 action steps?',
-		'Check my subscriptions for price hikes'
+		'Give me a concrete 30-day action plan',
+		'Show the trade-offs in a table',
+		'Set up a budget to fix my biggest leak'
 	];
 
 	let activeThread = $derived(threads.find((t) => t.id === activeThreadId) ?? null);
@@ -108,14 +111,16 @@
 
 	async function loadInitial() {
 		try {
-			const [ths, ins, mems] = await Promise.all([
+			const [ths, ins, mems, health] = await Promise.all([
 				api.listThreads(),
 				api.listInsights(),
-				api.listMemories()
+				api.listMemories(),
+				api.financialHealthScore().catch(() => null)
 			]);
 			threads = ths;
 			insights = ins;
 			memories = mems;
+			healthProfile = health;
 
 			const initialQuery = page.url.searchParams.get('q');
 			if (initialQuery && initialQuery.trim()) {
@@ -244,6 +249,9 @@
 		try {
 			const res = await api.decideAdvisorAction(activeThreadId, msg.id, approved);
 			messages = messages.map((m) => (m.id === msg.id ? res.message : m));
+			if (approved) {
+				api.financialHealthScore().then((h) => (healthProfile = h)).catch(() => null);
+			}
 			await scrollToBottom(true);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Action decision failed';
@@ -303,11 +311,18 @@
 	}
 
 	function agentLabel(agent: string | null): string {
+		if (agent === 'decision_advisor') return 'Senior CFP Advisor';
 		if (agent === 'ledger_analyst') return 'Ledger Analyst';
 		if (agent === 'document_rag') return 'Document & Memory RAG';
 		if (agent === 'wealth_strategist') return 'Wealth Strategist';
 		if (agent === 'action_proposer') return 'Action Agent (HITL)';
-		return 'Luna Advisor';
+		return 'Luna Personal CFO';
+	}
+
+	function healthBadgeTone(score: number): string {
+		if (score >= 75) return 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25';
+		if (score >= 50) return 'bg-amber-500/15 border-amber-500/35 text-amber-300 hover:bg-amber-500/25';
+		return 'bg-rose-500/15 border-rose-500/35 text-rose-300 hover:bg-rose-500/25';
 	}
 
 	function humanizeKey(k: string): string {
@@ -534,15 +549,31 @@
 				</div>
 				<div class="min-w-0">
 					<div class="text-sm font-semibold text-white truncate">
-						{activeThread ? activeThread.title : 'Luna AI Advisor'}
+						{activeThread ? activeThread.title : 'Luna · Senior Personal CFO'}
 					</div>
 					<div class="text-[11px] text-slate-400 hidden sm:block">
-						Multi-Agent LangGraph · Neon Ledger · Upstash RAG
+						CFP Decision Engine · Verified Neon Ledger · Upstash RAG
 					</div>
 				</div>
 			</div>
 
 			<div class="flex items-center gap-1.5 shrink-0">
+				{#if healthProfile}
+					<button
+						type="button"
+						disabled={streaming}
+						onclick={() =>
+							sendMessage(
+								'Run a full Senior Financial Advisor checkup on my Financial Health Score and give me my top 3 priorities.'
+							)}
+						title={`${healthProfile.health_score.grade} — ${healthProfile.health_score.top_priority}`}
+						class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer transition disabled:opacity-50 {healthBadgeTone(healthProfile.health_score.overall)}"
+					>
+						<ShieldCheck class="w-3.5 h-3.5 shrink-0" />
+						<span class="hidden sm:inline">Health</span>
+						<span class="font-mono-num">{healthProfile.health_score.overall}/100</span>
+					</button>
+				{/if}
 				<button
 					type="button"
 					onclick={() => openPanelTab('insights')}
@@ -586,10 +617,10 @@
 						</div>
 						<div class="space-y-2 max-w-lg">
 							<h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-								Hi, I'm Luna.
+								Hi, I'm Luna — your Personal CFO.
 							</h1>
 							<p class="text-sm text-slate-400 leading-relaxed">
-								Ask about your cash flow, compare Snowball vs. Avalanche debt payoff, search uploaded receipts, or ask me to create budgets & goals with one-click approval.
+								Ask before you spend ("Can I afford this?"), run a CFP Financial Health Checkup, spot spending leaks, compare debt strategies, or let me create budgets & goals with one-click approval.
 							</p>
 						</div>
 
@@ -793,7 +824,7 @@
 						onkeydown={handleComposerKeydown}
 						disabled={streaming}
 						rows={1}
-						placeholder="Message Luna about spending, budgets, debts, or receipts..."
+						placeholder="Ask Luna: 'Can I afford a $1,200 trip?' or 'Where am I leaking money?'"
 						class="flex-1 bg-transparent px-2.5 py-2 text-[15px] text-white placeholder:text-slate-500 focus:outline-none resize-none max-h-40 leading-relaxed"
 					></textarea>
 					<button

@@ -14,6 +14,7 @@ from app.models.advisor import ProactiveInsight
 from app.models.finance import Transaction
 from app.models.user import User
 from app.services.dashboard_service import get_dashboard_summary
+from app.services.financial_health_service import compute_financial_health_profile
 from app.services.planning_service import get_budget_overview, get_recurring_overview
 
 
@@ -144,14 +145,20 @@ async def generate_proactive_insights(
             )
         )
 
-    # 5. Weekly AI Financial Digest
+    # 5. Weekly AI Financial Digest (Senior CFO Diagnostic lens)
     dash = await get_dashboard_summary(db, user, months=3)
+    health = await compute_financial_health_profile(db, user)
     digest_payload = {
         "base_currency": user.base_currency,
+        "health_score": health["health_score"]["overall"],
+        "health_grade": health["health_score"]["grade"],
+        "top_priority": health["health_score"]["top_priority"],
+        "emergency_runway_months": health["cash_flow_ratios"]["emergency_runway_months"],
         "net_worth": f"{dash.net_worth:.2f}",
         "month_income": f"{dash.period_income:.2f}",
         "month_expenses": f"{dash.period_expenses:.2f}",
         "savings_rate_pct": dash.savings_rate,
+        "spending_leaks_mom": health["spending_leaks_mom"][:3],
         "top_categories": [
             {"name": c.category_name, "total": f"{c.total:.2f}", "pct": c.percentage}
             for c in dash.category_breakdown[:4]
@@ -166,8 +173,9 @@ async def generate_proactive_insights(
                 [
                     SystemMessage(
                         content=(
-                            "You are Luna, a personal finance AI advisor. Write a crisp 3-bullet financial digest "
-                            "(1 win or observation, 1 watch-out, 1 concrete next action) using ONLY the provided numbers."
+                            "You are Luna, a Senior Financial Advisor & Personal CFO. Write a sharp, "
+                            "executive 3-bullet financial digest in clean Markdown (**1 Key Win**, "
+                            "**1 Risk / Spending Leak**, **1 High-Impact Action This Week**) using ONLY the exact verified numbers provided."
                         )
                     ),
                     HumanMessage(content=json.dumps(digest_payload)),

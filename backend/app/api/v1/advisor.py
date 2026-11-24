@@ -30,6 +30,7 @@ from app.schemas.advisor import (
     UserMemoryCreateRequest,
     UserMemoryItem,
 )
+from app.services.financial_health_service import compute_financial_health_profile
 from app.services.insights_service import generate_proactive_insights
 from app.services.quota_service import (
     TokenMeterCallbackHandler,
@@ -43,11 +44,12 @@ router = APIRouter(prefix="/advisor", tags=["Luna AI Financial Advisor"])
 NODE_STATUS_LABELS: dict[str, str] = {
     "recall_memory": "Recalling your financial preferences...",
     "supervisor_router": "Luna is routing your request...",
+    "decision_advisor": "Senior CFP Advisor is evaluating your ratios & trade-offs...",
     "ledger_analyst": "Ledger Analyst is querying your accounts & cash flow...",
     "document_rag": "Searching your receipts & statements in Upstash Vector...",
     "wealth_strategist": "Wealth Strategist is running deterministic simulations...",
     "action_proposer": "Preparing action proposal for your approval...",
-    "general": "Luna is thinking...",
+    "general": "Luna is analyzing...",
 }
 
 
@@ -417,6 +419,17 @@ async def remove_memory(
     vector_service: VectorMemoryBackend = Depends(get_vector_dep),
 ) -> None:
     await vector_service.delete_user_fact(current_user.id, memory_id)
+
+
+# --- Financial Health Score (Senior CFP Diagnostic) ---
+
+
+@router.get("/health-score")
+async def get_financial_health_score(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await compute_financial_health_profile(db, current_user)
 
 
 # --- Proactive AI Insights & Anomalies ---
