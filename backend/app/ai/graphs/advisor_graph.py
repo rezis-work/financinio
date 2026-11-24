@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal, TypedDict
@@ -28,6 +29,12 @@ from app.services.financial_health_service import (
     compute_financial_health_profile,
     evaluate_purchase_decision,
 )
+from app.services.market_data_service import (
+    CURATED_UNIVERSE,
+    fetch_multiple_charts,
+    fetch_nbg_forex_rates,
+    normalize_symbol,
+)
 from app.services.planning_service import (
     enrich_goal,
     get_budget_overview,
@@ -36,6 +43,7 @@ from app.services.planning_service import (
     simulate_debt_payoff,
     simulate_what_if,
 )
+from app.services.quant_signal_service import analyze_asset_quant
 from app.services.vector_service import VectorMemoryBackend, get_vector_service
 from app.services.web_search_service import (
     run_openai_live_web_search,
@@ -51,6 +59,7 @@ RouteName = Literal[
     "wealth_strategist",
     "action_proposer",
     "web_researcher",
+    "market_analyst",
     "general",
 ]
 
@@ -75,13 +84,14 @@ class RouteDecision(BaseModel):
     route: RouteName = Field(
         description=(
             "Choose 'action_proposer' ONLY if the user explicitly asks to create/set/add a budget, financial goal, or categorization rule in the app. "
-            "Choose 'web_researcher' if the user asks to search the live web or find current external listings, apartments/rent/real estate, product prices, deals, flights/hotels, bank deposit/mortgage/interest rates, exchange rates, or up-to-date tax/market info. "
-            "Choose 'decision_advisor' if the user asks for spending advice, affordability ('can I afford...', 'should I buy...'), "
+            "Choose 'market_analyst' if the user asks about stock prices, ETFs, forex rates (USD/GEL, EUR/USD, NBG), crypto/gold prices, technical indicators (RSI/MACD), trader bot picks, or which stocks/ETFs/forex to buy or watch. "
+            "Choose 'web_researcher' if the user asks to search the live web or find current external listings, apartments/rent/real estate, product prices, deals, flights/hotels, bank deposit/mortgage rates, or up-to-date tax info. "
+            "Choose 'decision_advisor' if the user asks for consumer purchase affordability ('can I afford a laptop/trip...'), "
             "financial checkup/audit/health score, where they are wasting/leaking money, how to save more, or prioritizing debt vs savings vs investing. "
             "Choose 'document_rag' if the user asks to find/search an uploaded receipt, PDF statement, invoice, warranty, or asks you to remember a personal preference/fact. "
             "Choose 'wealth_strategist' if the user specifically asks about net worth history, financial goals progress, Snowball vs Avalanche debt payoff math, or What-If cash flow projections. "
             "Choose 'ledger_analyst' if the user asks factual lookups about spending totals, income, specific transactions, merchants, account balances, budgets, or recurring bills. "
-            "Choose 'general' for conceptual personal finance questions that do not need personal account analysis or live web search."
+            "Choose 'general' for conceptual personal finance questions that do not need personal account analysis or live market/web search."
         )
     )
     reasoning: str = Field(description="Brief one-sentence routing explanation")
@@ -181,6 +191,97 @@ def _extract_grounding_citations(resp: Any) -> tuple[list[dict[str, Any]], list[
     return web_citations, queries
 
 
+EXPLICIT_TICKER_KEYWORDS: dict[str, str] = {
+    "nvda": "NVDA",
+    "nvidia": "NVDA",
+    "aapl": "AAPL",
+    "msft": "MSFT",
+    "amzn": "AMZN",
+    "googl": "GOOGL",
+    "tsla": "TSLA",
+    "spy": "SPY",
+    "s&p": "SPY",
+    "qqq": "QQQ",
+    "nasdaq": "QQQ",
+    "voo": "VOO",
+    "schd": "SCHD",
+    "jpm": "JPM",
+    "btc": "BTC-USD",
+    "bitcoin": "BTC-USD",
+    "eth": "ETH-USD",
+    "ethereum": "ETH-USD",
+    "xau": "GC=F",
+    "eur/usd": "EURUSD=X",
+    "eurusd": "EURUSD=X",
+    "gbp/usd": "GBPUSD=X",
+    "gbpusd": "GBPUSD=X",
+    "usd/jpy": "USDJPY=X",
+    "usdjpy": "USDJPY=X",
+}
+
+BRAND_TICKER_KEYWORDS: dict[str, str] = {
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "amazon": "AMZN",
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "meta": "META",
+    "tesla": "TSLA",
+    "gold": "GC=F",
+}
+
+MARKET_INTENT_KEYWORDS = (
+    "stock",
+    "stocks",
+    "share",
+    "shares",
+    "etf",
+    "etfs",
+    "forex",
+    "fx rate",
+    "exchange rate",
+    "nbg",
+    "usd/gel",
+    "eur/gel",
+    "eur/usd",
+    "trader bot",
+    "trading bot",
+    "trade signal",
+    "what to buy",
+    "what should i buy",
+    "best stock",
+    "ticker",
+    "rsi",
+    "macd",
+    "bitcoin",
+    "crypto",
+    "gold price",
+    "invest in",
+    "market",
+)
+
+
+def _extract_market_symbols(text: str) -> list[str]:
+    found: list[str] = []
+    low = text.lower()
+    for kw, sym in EXPLICIT_TICKER_KEYWORDS.items():
+        if re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", low):
+            if sym not in found:
+                found.append(sym)
+    has_market_context = any(k in low for k in MARKET_INTENT_KEYWORDS)
+    if has_market_context:
+        for kw, sym in BRAND_TICKER_KEYWORDS.items():
+            if re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", low):
+                if sym not in found:
+                    found.append(sym)
+    # Also detect explicit $TICKER notation like $AMD or $NFLX
+    for m in re.findall(r"\$([A-Z]{2,5})\b", text):
+        norm = normalize_symbol(m)
+        if norm not in found:
+            found.append(norm)
+    return found[:6]
+
+
 def _heuristic_route(text: str, web_search_mode: WebSearchMode = "auto") -> RouteName:
     low = text.lower()
     if web_search_mode == "on":
@@ -189,6 +290,21 @@ def _heuristic_route(text: str, web_search_mode: WebSearchMode = "auto") -> Rout
     has_action_noun = any(n in low for n in ("budget", "goal", "rule"))
     if has_write_verb and has_action_noun:
         return "action_proposer"
+    if any(
+        k in low
+        for k in (
+            "receipt",
+            "statement pdf",
+            "uploaded document",
+            "invoice",
+            "warranty",
+            "remember that",
+            "remember my",
+        )
+    ):
+        return "document_rag"
+    if any(k in low for k in MARKET_INTENT_KEYWORDS) or bool(_extract_market_symbols(text)):
+        return "market_analyst"
     if web_search_mode != "off" and any(
         k in low
         for k in (
@@ -1185,6 +1301,124 @@ def build_advisor_graph(
             "citations": citations,
         }
 
+    async def market_analyst_node(state: AdvisorState) -> dict[str, Any]:
+        """Luna Markets & AI Trader Bot: Live Yahoo + NBG Forex + Deterministic Quant Engine + CFO Risk Gate."""
+        query = _last_user_text(state.get("messages", []))
+        profile = await compute_financial_health_profile(db, user)
+        cf = profile["cash_flow_ratios"]
+        bs = profile["balance_sheet"]
+        liquid_cash = float(Decimal(str(bs["liquid_cash"])))
+        runway_months = float(cf["emergency_runway_months"])
+
+        requested_syms = _extract_market_symbols(query)
+        wants_fx = any(
+            k in query.lower()
+            for k in ("forex", "fx", "gel", "nbg", "usd", "eur", "exchange", "currency", "lari")
+        )
+        scan_syms = (
+            requested_syms
+            if requested_syms
+            else [a.symbol for a in CURATED_UNIVERSE[:10]]
+        )
+
+        charts = await fetch_multiple_charts(scan_syms, range_str="6mo")
+        quant_results = [
+            analyze_asset_quant(
+                charts[s],
+                risk_profile="balanced",
+                liquid_cash_usd=liquid_cash,
+                emergency_runway_months=runway_months,
+            )
+            for s in scan_syms
+            if s in charts
+        ]
+        quant_results.sort(key=lambda x: x.quant_score, reverse=True)
+
+        nbg_rates = await fetch_nbg_forex_rates() if wants_fx else []
+
+        citations: list[dict[str, Any]] = [
+            {
+                "source": "Python Quant Engine",
+                "label": f"Analyzed {len(quant_results)} live instruments (RSI, MACD, SMA, ATR)",
+            },
+            {
+                "source": "CFP Risk Gate",
+                "label": f"Runway {runway_months:.1f} mo · Liquid {user.base_currency} {bs['liquid_cash']}",
+            },
+        ]
+        if nbg_rates:
+            usd_r = next((r for r in nbg_rates if r.code == "USD"), None)
+            eur_r = next((r for r in nbg_rates if r.code == "EUR"), None)
+            fx_parts = []
+            if usd_r:
+                fx_parts.append(f"USD/GEL {usd_r.rate:.4f}")
+            if eur_r:
+                fx_parts.append(f"EUR/GEL {eur_r.rate:.4f}")
+            if fx_parts:
+                citations.append({"source": "NBG Official FX", "label": " · ".join(fx_parts)})
+
+        market_payload = {
+            "as_of": date.today().isoformat(),
+            "cfo_risk_gate": {
+                "base_currency": user.base_currency,
+                "liquid_cash": bs["liquid_cash"],
+                "emergency_runway_months": runway_months,
+                "avg_monthly_surplus": cf["avg_monthly_surplus"],
+                "high_apr_warning": (
+                    "User has <3 months emergency runway — strongly encourage Paper Trading in /markets first."
+                    if runway_months < 3.0
+                    else "Emergency buffer healthy for prudent position sizing."
+                ),
+            },
+            "nbg_official_gel_rates": [asdict(r) for r in nbg_rates[:6]],
+            "quant_signals": [asdict(q) for q in quant_results[:8]],
+        }
+
+        if model is not None:
+            sys_prompt = (
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                "Active Specialist: **Luna Quantitative Markets Analyst & AI Trader Bot**.\n"
+                f"Verified Live Market Quotes, NBG Forex Rates & Python Quant Signals (JSON):\n"
+                f"{json.dumps(market_payload, indent=2)}\n\n"
+                "RESPONSE INSTRUCTIONS:\n"
+                "1. Open with a crisp **Market Verdict & Top Pick(s)** grounded 100% in the verified live prices and Quant Scores above (NEVER invent prices or indicators).\n"
+                "2. Present a clean **Markdown Trade Plan Table** with columns: `Symbol`, `Live Price`, `Quant Score`, `Signal`, `Entry Zone`, `Stop-Loss`, `Take-Profit`, and `R:R`.\n"
+                "3. If NBG Forex rates are included, present a compact FX rate summary (`USD/GEL`, `EUR/GEL`, `GBP/GEL`).\n"
+                "4. Explain the top 2–3 technical drivers (`RSI`, `MACD`, `SMA 20/50/200`, volatility) AND apply the **Personal CFO Risk Gate** (exact safe starter size or Paper Trading warning if runway < 3 months).\n"
+                "5. Invite the user to test any idea risk-free on their **Markets & AI Trader Desk (`/markets`)** virtual $10,000 Paper Portfolio.\n"
+                "6. Include a brief 1-line educational note that quant signals are analytical/educational research, not licensed investment advice."
+            )
+            resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
+            answer = _extract_ai_text(resp)
+        else:
+            lines = [
+                "### Luna AI Trader Bot — Live Quant Scan",
+                "",
+                "| Symbol | Live Price | Score | Signal | Entry Zone | Stop-Loss | Target | R:R |",
+                "| :--- | ---: | ---: | :--- | :--- | ---: | ---: | ---: |",
+            ]
+            for q in quant_results[:6]:
+                lines.append(
+                    f"| **{q.symbol}** | `{q.price}` {q.currency} | {q.quant_score}/100 | **{q.signal.replace('_', ' ')}** | "
+                    f"{q.entry_zone_low}–{q.entry_zone_high} | {q.stop_loss} | {q.take_profit} | {q.risk_reward_ratio}:1 |"
+                )
+            if nbg_rates:
+                lines += ["", "### Official NBG GEL Exchange Rates"]
+                for r in nbg_rates[:4]:
+                    lines.append(f"- **{r.code}/GEL**: `{r.rate:.4f}` ({r.diff:+.4f})")
+            lines += [
+                "",
+                f"**CFO Risk Gate:** Emergency runway `{runway_months:.1f} mo` · Liquid cash `{user.base_currency} {bs['liquid_cash']}`.",
+                "Test any signal risk-free in your `/markets` virtual **$10,000 Paper Portfolio** (*educational research only*).",
+            ]
+            answer = "\n".join(lines)
+
+        return {
+            "messages": [AIMessage(content=answer)],
+            "active_agent": "market_analyst",
+            "citations": citations,
+        }
+
     async def general_coach_node(state: AdvisorState) -> dict[str, Any]:
         memories = state.get("recalled_memories", [])
         health = await compute_financial_health_profile(db, user)
@@ -1201,8 +1435,8 @@ def build_advisor_graph(
         else:
             answer = (
                 "Hi! I'm **Luna**, your Senior Financial Advisor. Ask me whether you can afford a purchase, "
-                "to search live apartments or prices in your budget, run a Financial Health Checkup, "
-                "find spending leaks, or create a budget or goal!"
+                "for live stock/forex signals from the AI Trader Bot, to search apartments in your budget, "
+                "run a Financial Health Checkup, or create a budget or goal!"
             )
         return {
             "messages": [AIMessage(content=answer)],
@@ -1222,6 +1456,7 @@ def build_advisor_graph(
     graph.add_node("wealth_strategist", wealth_strategist_node)
     graph.add_node("action_proposer", action_proposer_node)
     graph.add_node("web_researcher", web_researcher_node)
+    graph.add_node("market_analyst", market_analyst_node)
     graph.add_node("general", general_coach_node)
 
     graph.add_edge(START, "recall_memory")
@@ -1236,6 +1471,7 @@ def build_advisor_graph(
             "wealth_strategist": "wealth_strategist",
             "action_proposer": "action_proposer",
             "web_researcher": "web_researcher",
+            "market_analyst": "market_analyst",
             "general": "general",
         },
     )
@@ -1245,6 +1481,7 @@ def build_advisor_graph(
     graph.add_edge("wealth_strategist", END)
     graph.add_edge("action_proposer", END)
     graph.add_edge("web_researcher", END)
+    graph.add_edge("market_analyst", END)
     graph.add_edge("general", END)
 
     saver = checkpointer if checkpointer is not None else MemorySaver()

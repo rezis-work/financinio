@@ -3,6 +3,7 @@ from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.finance import Account, CategorizationRule, Category, Transaction
 from app.models.ingestion import ImportBatch, StagedTransaction, UploadedDocument
+from app.models.markets import MarketWatchlistItem, PaperPortfolio, PaperPosition, PaperTrade
 from app.models.planning import Budget, FinancialGoal, NetWorthSnapshot, RecurringItem
 from app.models.user import AIUsageEvent, RefreshToken, User
 
@@ -26,4 +27,8 @@ __all__ = [
     "ChatMessage",
     "ProactiveInsight",
     "AuditLog",
+    "MarketWatchlistItem",
+    "PaperPortfolio",
+    "PaperPosition",
+    "PaperTrade",
 ]

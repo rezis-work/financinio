@@ -143,6 +143,9 @@ def fake_vector() -> InMemoryVectorService:
 async def client(
     test_db_session: AsyncSession, fake_vector: InMemoryVectorService
 ) -> AsyncGenerator[AsyncClient, None]:
+    from app.core.rate_limit import rate_limiter
+
+    rate_limiter.reset()
     app = create_app()
     tmp_dir = tempfile.mkdtemp(prefix="financinio_test_uploads_")
     storage = LocalDiskStorage(tmp_dir)

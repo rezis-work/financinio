@@ -529,3 +529,165 @@ export interface AdminOverview {
 	default_token_limit: number;
 	recent_ai_usage: AIUsageEvent[];
 }
+
+// --- Markets, Forex & AI Trader Bot ---
+
+export type MarketSignal = 'STRONG_BUY' | 'BUY' | 'HOLD' | 'WATCH_SELL' | 'AVOID';
+export type MarketRiskProfile = 'conservative' | 'balanced' | 'aggressive';
+
+export interface NbgForexRate {
+	code: string;
+	name: string;
+	quantity: number;
+	rate: number;
+	rate_per_unit: number;
+	diff: number;
+	diff_pct: number;
+	valid_from: string;
+}
+
+export interface CandlePoint {
+	date: string;
+	open: number;
+	high: number;
+	low: number;
+	close: number;
+	volume: number;
+	sma_20: number | null;
+	sma_50: number | null;
+}
+
+export interface QuantSignal {
+	symbol: string;
+	display_name: string;
+	asset_type: string;
+	currency: string;
+	price: number;
+	change: number;
+	change_pct: number;
+	quant_score: number;
+	signal: MarketSignal;
+	trend_label: string;
+	rsi_14: number | null;
+	sma_20: number | null;
+	sma_50: number | null;
+	sma_200: number | null;
+	macd: number | null;
+	macd_signal: number | null;
+	macd_hist: number | null;
+	atr_14: number | null;
+	volatility_pct: number | null;
+	return_1w_pct: number | null;
+	return_1m_pct: number | null;
+	return_3m_pct: number | null;
+	fifty_two_week_high: number | null;
+	fifty_two_week_low: number | null;
+	entry_zone_low: number;
+	entry_zone_high: number;
+	stop_loss: number;
+	take_profit: number;
+	risk_reward_ratio: number;
+	risk_level: 'Low' | 'Medium' | 'High';
+	suggested_max_allocation_usd: number | null;
+	cfo_guardrail_note: string | null;
+	reasons: string[];
+}
+
+export interface QuoteDetail {
+	analysis: QuantSignal;
+	candles: CandlePoint[];
+	fetched_at: string;
+}
+
+export interface SymbolSearchHit {
+	symbol: string;
+	display_name: string;
+	asset_type: string;
+	exchange: string;
+}
+
+export interface WatchlistItem {
+	id: string;
+	symbol: string;
+	display_name: string;
+	asset_type: string;
+	target_buy_price: string | null;
+	target_sell_price: string | null;
+	alert_enabled: boolean;
+	notes: string | null;
+	live_price: number | null;
+	change_pct: number | null;
+	currency: string;
+	quant_score: number | null;
+	signal: string | null;
+	alert_triggered: 'none' | 'buy_target_hit' | 'sell_target_hit';
+	created_at: string;
+}
+
+export interface MarketsOverview {
+	nbg_forex_rates: NbgForexRate[];
+	ticker_quotes: QuantSignal[];
+	triggered_alerts: WatchlistItem[];
+	cfo_runway_months: number;
+	cfo_liquid_cash: number;
+	base_currency: string;
+	risk_profile: MarketRiskProfile;
+}
+
+export interface MarketScannerResponse {
+	risk_profile: MarketRiskProfile;
+	category: string;
+	cfo_runway_months: number;
+	cfo_liquid_cash: number;
+	items: QuantSignal[];
+}
+
+export interface PaperPosition {
+	id: string;
+	symbol: string;
+	display_name: string;
+	asset_type: string;
+	quantity: string;
+	avg_entry_price: string;
+	live_price: number;
+	market_value: string;
+	cost_basis: string;
+	unrealized_pnl: string;
+	unrealized_pnl_pct: number;
+	stop_loss: string | null;
+	take_profit: string | null;
+	signal: string | null;
+	quant_score: number | null;
+}
+
+export interface PaperTrade {
+	id: string;
+	symbol: string;
+	display_name: string;
+	asset_type: string;
+	side: 'buy' | 'sell';
+	quantity: string;
+	price: string;
+	total_value: string;
+	realized_pnl: string | null;
+	signal_at_trade: string | null;
+	rationale: string | null;
+	executed_at: string;
+}
+
+export interface PaperPortfolio {
+	id: string;
+	currency: string;
+	risk_profile: MarketRiskProfile;
+	starting_cash: string;
+	cash_balance: string;
+	invested_value: string;
+	total_equity: string;
+	total_pnl: string;
+	total_return_pct: number;
+	realized_pnl_total: string;
+	win_rate_pct: number | null;
+	closed_trades_count: number;
+	positions: PaperPosition[];
+	recent_trades: PaperTrade[];
+}

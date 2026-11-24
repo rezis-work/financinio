@@ -24,17 +24,24 @@ import type {
 	GoalType,
 	ImportBatch,
 	ImportBatchDetail,
+	MarketRiskProfile,
+	MarketScannerResponse,
+	MarketsOverview,
 	NetWorthOverview,
 	NetWorthSnapshot,
+	PaperPortfolio,
 	ProactiveInsight,
+	QuoteDetail,
 	RecurringCadence,
 	RecurringItem,
 	RecurringOverview,
+	SymbolSearchHit,
 	SystemStatus,
 	Transaction,
 	TransactionListResponse,
 	User,
 	UserMemoryItem,
+	WatchlistItem,
 	WhatIfResponse
 } from './types';
 
@@ -602,5 +609,80 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 
-	adminUserUsage: (userId: string) => request<AIUsageEvent[]>(`/admin/users/${userId}/usage`)
+	adminUserUsage: (userId: string) => request<AIUsageEvent[]>(`/admin/users/${userId}/usage`),
+
+	// Markets, Forex & AI Trader Bot
+	marketsOverview: (forceRefresh = false) =>
+		request<MarketsOverview>(`/markets/overview${forceRefresh ? '?force_refresh=true' : ''}`),
+
+	marketsScanner: (
+		category: 'all' | 'stock' | 'etf' | 'forex' | 'crypto' | 'commodity' = 'all',
+		riskProfile?: MarketRiskProfile
+	) => {
+		const qs = new URLSearchParams({ category });
+		if (riskProfile) qs.set('risk_profile', riskProfile);
+		return request<MarketScannerResponse>(`/markets/scanner?${qs.toString()}`);
+	},
+
+	marketsQuoteDetail: (symbol: string, rangeStr: '1mo' | '3mo' | '6mo' | '1y' = '6mo') =>
+		request<QuoteDetail>(
+			`/markets/quote/${encodeURIComponent(symbol)}?range_str=${rangeStr}`
+		),
+
+	marketsSearch: (q: string) =>
+		request<SymbolSearchHit[]>(`/markets/search?q=${encodeURIComponent(q)}`),
+
+	listWatchlist: () => request<WatchlistItem[]>('/markets/watchlist'),
+
+	addWatchlistItem: (payload: {
+		symbol: string;
+		display_name?: string;
+		asset_type?: string;
+		target_buy_price?: string | null;
+		target_sell_price?: string | null;
+		alert_enabled?: boolean;
+		notes?: string | null;
+	}) => request<WatchlistItem>('/markets/watchlist', { method: 'POST', body: JSON.stringify(payload) }),
+
+	updateWatchlistItem: (
+		id: string,
+		payload: Partial<{
+			target_buy_price: string | null;
+			target_sell_price: string | null;
+			alert_enabled: boolean;
+			notes: string | null;
+		}>
+	) =>
+		request<WatchlistItem>(`/markets/watchlist/${id}`, {
+			method: 'PATCH',
+			body: JSON.stringify(payload)
+		}),
+
+	deleteWatchlistItem: (id: string) =>
+		request<void>(`/markets/watchlist/${id}`, { method: 'DELETE' }),
+
+	getPaperPortfolio: () => request<PaperPortfolio>('/markets/paper/portfolio'),
+
+	executePaperTrade: (payload: {
+		symbol: string;
+		side: 'buy' | 'sell';
+		usd_amount?: string;
+		quantity?: string;
+		stop_loss?: string | null;
+		take_profit?: string | null;
+		rationale?: string | null;
+	}) =>
+		request<PaperPortfolio>('/markets/paper/trade', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+
+	updatePaperSettings: (riskProfile: MarketRiskProfile) =>
+		request<PaperPortfolio>('/markets/paper/settings', {
+			method: 'PATCH',
+			body: JSON.stringify({ risk_profile: riskProfile })
+		}),
+
+	resetPaperPortfolio: () =>
+		request<PaperPortfolio>('/markets/paper/reset', { method: 'POST' })
 };

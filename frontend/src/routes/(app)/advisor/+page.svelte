@@ -333,6 +333,7 @@
 		if (agent === 'wealth_strategist') return 'Wealth Strategist';
 		if (agent === 'action_proposer') return 'Action Agent (HITL)';
 		if (agent === 'web_researcher') return 'Live Web Researcher';
+		if (agent === 'market_analyst') return 'AI Trader Bot & Quant';
 		return 'Luna Personal CFO';
 	}
 

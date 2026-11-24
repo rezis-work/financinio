@@ -12,6 +12,7 @@
 		PieChart,
 		Repeat,
 		Target,
+		TrendingUp,
 		Settings,
 		ShieldCheck,
 		Infinity as InfinityIcon,
@@ -34,6 +35,7 @@
 		{ href: '/budgets', label: 'Budgets', icon: PieChart },
 		{ href: '/recurring', label: 'Recurring', icon: Repeat },
 		{ href: '/wealth', label: 'Wealth & Goals', icon: Target },
+		{ href: '/markets', label: 'Markets & Bot', icon: TrendingUp },
 		{ href: '/imports', label: 'AI Imports', icon: UploadCloud },
 		{ href: '/settings', label: 'Settings', icon: Settings },
 		...(auth.user?.role === 'admin'

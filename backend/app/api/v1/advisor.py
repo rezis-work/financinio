@@ -50,6 +50,7 @@ NODE_STATUS_LABELS: dict[str, str] = {
     "wealth_strategist": "Wealth Strategist is running deterministic simulations...",
     "action_proposer": "Preparing action proposal for your approval...",
     "web_researcher": "Searching the live web & matching against your budget...",
+    "market_analyst": "Luna Trader Bot is fetching live quotes & running quant signals...",
     "general": "Luna is analyzing...",
 }
 
