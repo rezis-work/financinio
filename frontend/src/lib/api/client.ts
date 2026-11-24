@@ -334,6 +334,16 @@ export const api = {
 		alert_threshold_pct?: number;
 	}) => request<BudgetOverview>('/budgets', { method: 'POST', body: JSON.stringify(payload) }),
 
+	updateBudget: (
+		id: string,
+		payload: Partial<{
+			amount: string;
+			rollover: boolean;
+			alert_threshold_pct: number;
+			is_active: boolean;
+		}>
+	) => request<BudgetOverview>(`/budgets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
 	apply503020Template: (monthlyIncome: string) =>
 		request<BudgetOverview>('/budgets/apply-50-30-20', {
 			method: 'POST',
