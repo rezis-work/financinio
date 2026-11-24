@@ -201,6 +201,11 @@ export const api = {
 	listCategories: () => request<Category[]>('/categories'),
 	createCategory: (payload: { name: string; kind: string; color: string; icon?: string }) =>
 		request<Category>('/categories', { method: 'POST', body: JSON.stringify(payload) }),
+	updateCategory: (
+		id: string,
+		payload: Partial<{ name: string; kind: string; color: string; icon: string }>
+	) => request<Category>(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+	deleteCategory: (id: string) => request<void>(`/categories/${id}`, { method: 'DELETE' }),
 
 	listRules: () => request<CategorizationRule[]>('/categories/rules'),
 	createRule: (payload: {
