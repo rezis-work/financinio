@@ -135,7 +135,9 @@ async def get_import_batch(
 @router.post("/upload", response_model=ImportBatchDetailResponse, status_code=status.HTTP_201_CREATED)
 async def upload_and_parse_document(
     account_id: UUID = Form(...),
-    doc_type_override: Literal["csv", "xlsx", "pdf_statement", "receipt"] | None = Form(default=None),
+    doc_type_override: Literal["csv", "xlsx", "pdf_statement", "bog_pdf", "receipt"] | None = Form(
+        default=None
+    ),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -147,8 +149,6 @@ async def upload_and_parse_document(
     )
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target account not found.")
-
-    enforce_ai_quota(current_user)
 
     raw_bytes = await file.read()
     if not raw_bytes:
@@ -162,6 +162,17 @@ async def upload_and_parse_document(
     filename = file.filename or "statement.csv"
     mime_type = file.content_type or "application/octet-stream"
     doc_type = doc_type_override or _detect_doc_type(filename, mime_type)
+
+    if doc_type == "bog_pdf" and not (
+        Path(filename).suffix.lower() == ".pdf" or mime_type == "application/pdf"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bank of Georgia (BOG) dedicated import requires a PDF statement export (.pdf).",
+        )
+
+    if doc_type != "bog_pdf":
+        enforce_ai_quota(current_user)
 
     storage_key = await storage.save(current_user.id, filename, raw_bytes)
     sha256 = hashlib.sha256(raw_bytes).hexdigest()
@@ -268,7 +279,7 @@ async def upload_and_parse_document(
     document.extracted_text = extracted_text
 
     # Index PDF/receipt text chunks into Upstash Vector for semantic RAG
-    if doc_type in ("pdf_statement", "receipt") and extracted_text:
+    if doc_type in ("pdf_statement", "bog_pdf", "receipt") and extracted_text:
         await vector_service.upsert_document_chunks(
             user_id=current_user.id,
             document_id=document.id,
@@ -329,6 +340,27 @@ async def upload_and_parse_document(
 
     # Reload with relationships
     return await get_import_batch(batch.id, current_user=current_user, db=db)
+
+
+@router.post("/bog", response_model=ImportBatchDetailResponse, status_code=status.HTTP_201_CREATED)
+async def upload_bog_statement_pdf(
+    account_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: StorageBackend = Depends(get_storage_dep),
+    vector_service: VectorMemoryBackend = Depends(get_vector_dep),
+) -> ImportBatchDetailResponse:
+    """Dedicated Bank of Georgia (საქართველოს ბანკი / BOG) Georgian PDF Statement importer."""
+    return await upload_and_parse_document(
+        account_id=account_id,
+        doc_type_override="bog_pdf",
+        file=file,
+        current_user=current_user,
+        db=db,
+        storage=storage,
+        vector_service=vector_service,
+    )
 
 
 @router.post("/{batch_id}/commit", response_model=ImportBatchDetailResponse)
@@ -463,6 +495,11 @@ async def commit_import_batch(
 
     # Persist approved transactions to Neon ledger
     created_count = 0
+    import_tags = (
+        ["imported", "bank-of-georgia"]
+        if batch.document and batch.document.doc_type == "bog_pdf"
+        else ["imported"]
+    )
     for row in approved_rows:
         occ = date.fromisoformat(row["occurred_at"])
         amt = Decimal(str(row["amount"])).quantize(Decimal("0.01"))
@@ -489,7 +526,7 @@ async def commit_import_batch(
             merchant_raw=row["merchant_raw"],
             merchant_clean=row["merchant_clean"],
             description=row.get("description"),
-            tags=["imported"],
+            tags=list(import_tags),
             fingerprint=fp,
             source_document_id=batch.document_id,
             ai_confidence=Decimal(str(round(float(row.get("confidence", 0.9)), 3))),

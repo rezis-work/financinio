@@ -16,7 +16,9 @@
 		AlertTriangle,
 		Sparkles,
 		Brain,
-		ShieldCheck
+		ShieldCheck,
+		Landmark,
+		FileText
 	} from 'lucide-svelte';
 
 	let accounts = $state<Account[]>([]);
@@ -25,6 +27,7 @@
 	let activeBatch = $state<ImportBatchDetail | null>(null);
 	let editedRows = $state<Record<string, { user_approved: boolean; merchant_clean: string; category_id: string }>>({});
 
+	let importMode = $state<'general' | 'bog'>('bog');
 	let selectedAccountId = $state('');
 	let uploading = $state(false);
 	let committing = $state(false);
@@ -44,7 +47,15 @@
 			accounts = accs;
 			categories = cats;
 			batches = list;
-			if (!selectedAccountId && accs.length > 0) selectedAccountId = accs[0].id;
+			if (!selectedAccountId && accs.length > 0) {
+				const gelOrBog = accs.find(
+					(a) =>
+						a.currency.toUpperCase() === 'GEL' ||
+						a.name.toLowerCase().includes('bog') ||
+						(a.institution || '').toLowerCase().includes('georgia')
+				);
+				selectedAccountId = (gelOrBog ?? accs[0]).id;
+			}
 			const pending = list.find((b) => b.status === 'needs_review');
 			if (pending) {
 				await selectBatch(pending.id);
@@ -86,7 +97,10 @@
 		error = null;
 		successMsg = null;
 		try {
-			const detail = await api.uploadDocument(selectedAccountId, file);
+			const detail =
+				importMode === 'bog'
+					? await api.uploadBogStatement(selectedAccountId, file)
+					: await api.uploadDocument(selectedAccountId, file);
 			activeBatch = detail;
 			hydrateEditedRows(detail);
 			batches = await api.listImportBatches();
@@ -136,9 +150,17 @@
 
 	function sourceBadgeClass(source: string): string {
 		if (source === 'rule') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+		if (source === 'bog_mcc' || source === 'bog_rule')
+			return 'bg-orange-500/15 text-orange-300 border-orange-500/30';
 		if (source === 'vector') return 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30';
 		if (source === 'llm') return 'bg-violet-500/15 text-violet-300 border-violet-500/30';
 		return 'bg-slate-800 text-slate-300 border-slate-700';
+	}
+
+	function docTypeLabel(docType: string): string {
+		if (docType === 'bog_pdf') return 'BOG PDF';
+		if (docType === 'pdf_statement') return 'PDF';
+		return docType.toUpperCase();
 	}
 </script>
 
@@ -161,12 +183,39 @@
 	{/if}
 
 	<!-- Upload Card -->
-	<div class="card-surface rounded-2xl p-6 space-y-4">
-		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-			<div>
-				<h2 class="text-base font-semibold text-white">Upload Financial Document</h2>
-				<p class="text-xs text-slate-400">Supports CSV, Excel (.xlsx), PDF bank statements, and receipt photos (PNG/JPG).</p>
+	<div class="card-surface rounded-2xl p-6 space-y-5">
+		<!-- Source Switcher: Dedicated Bank of Georgia (BOG) vs General Import -->
+		<div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+			<div class="inline-flex p-1 rounded-xl bg-slate-950/90 border border-slate-800 w-fit">
+				<button
+					type="button"
+					onclick={() => {
+						importMode = 'bog';
+						error = null;
+					}}
+					class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition cursor-pointer {importMode === 'bog'
+						? 'bg-orange-500/20 text-orange-300 border border-orange-500/35'
+						: 'text-slate-400 hover:text-white border border-transparent'}"
+				>
+					<Landmark class="w-3.5 h-3.5" />
+					Bank of Georgia (BOG)
+					<span class="px-1.5 py-0.5 rounded bg-orange-500/20 text-[10px] font-mono-num">GE PDF</span>
+				</button>
+				<button
+					type="button"
+					onclick={() => {
+						importMode = 'general';
+						error = null;
+					}}
+					class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition cursor-pointer {importMode === 'general'
+						? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/35'
+						: 'text-slate-400 hover:text-white border border-transparent'}"
+				>
+					<FileText class="w-3.5 h-3.5" />
+					General Statement / Receipt
+				</button>
 			</div>
+
 			<div class="flex items-center gap-2">
 				<label for="target-acc" class="text-xs text-slate-400">Target Account:</label>
 				<select
@@ -185,27 +234,66 @@
 			</div>
 		</div>
 
+		{#if importMode === 'bog'}
+			<div class="p-3.5 rounded-xl bg-orange-500/8 border border-orange-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+				<div class="space-y-0.5">
+					<div class="font-semibold text-orange-200">
+						საქართველოს ბანკი · Dedicated Bank of Georgia PDF Importer
+					</div>
+					<p class="text-slate-400">
+						Upload your Internet Bank PDF export (<span class="text-slate-200">ანგარიშიდან ამონაწერი</span>). Deterministically parses Georgian text, multi-currency balances (<span class="font-mono-num text-slate-200">GEL / USD / EUR / GBP</span>), merchants, and ISO MCC codes with zero AI token cost.
+					</p>
+				</div>
+				<span class="shrink-0 px-2.5 py-1 rounded-full bg-orange-500/15 border border-orange-500/30 text-orange-300 text-[10px] font-semibold uppercase tracking-wide w-fit">
+					0 AI Tokens · Verified Math
+				</span>
+			</div>
+		{:else}
+			<div>
+				<h2 class="text-sm font-semibold text-white">Upload General Financial Document</h2>
+				<p class="text-xs text-slate-400">Supports CSV, Excel (.xlsx), any bank PDF statement, and receipt photos (PNG/JPG).</p>
+			</div>
+		{/if}
+
 		<label
 			ondragover={(e) => { e.preventDefault(); dragOver = true; }}
 			ondragleave={() => (dragOver = false)}
 			ondrop={onDrop}
 			class="block border-2 border-dashed rounded-2xl p-8 text-center transition cursor-pointer {dragOver
-				? 'border-emerald-400 bg-emerald-500/10'
-				: 'border-slate-700/80 hover:border-slate-500 bg-slate-950/50'}"
+				? importMode === 'bog'
+					? 'border-orange-400 bg-orange-500/10'
+					: 'border-emerald-400 bg-emerald-500/10'
+				: importMode === 'bog'
+					? 'border-orange-500/35 hover:border-orange-400/70 bg-slate-950/60'
+					: 'border-slate-700/80 hover:border-slate-500 bg-slate-950/50'}"
 		>
 			<input
 				type="file"
-				accept=".csv,.xlsx,.xls,.pdf,image/*"
+				accept={importMode === 'bog' ? '.pdf,application/pdf' : '.csv,.xlsx,.xls,.pdf,image/*'}
 				class="hidden"
 				disabled={uploading}
-				onchange={(e) => handleFileUpload((e.currentTarget as HTMLInputElement).files?.[0])}
+				onchange={(e) => {
+					const input = e.currentTarget as HTMLInputElement;
+					handleFileUpload(input.files?.[0]);
+					input.value = '';
+				}}
 			/>
-			<UploadCloud class="w-10 h-10 text-emerald-400 mx-auto mb-3" />
+			<UploadCloud class="w-10 h-10 mx-auto mb-3 {importMode === 'bog' ? 'text-orange-400' : 'text-emerald-400'}" />
 			<div class="text-sm font-semibold text-white">
-				{uploading ? 'Running LangGraph extraction & categorization pipeline...' : 'Drop statement or receipt here, or click to browse'}
+				{#if uploading}
+					{importMode === 'bog'
+						? 'Parsing Bank of Georgia Georgian PDF & reconciling balances...'
+						: 'Running LangGraph extraction & categorization pipeline...'}
+				{:else if importMode === 'bog'}
+					Drop your Bank of Georgia PDF (ანგარიშიდან ამონაწერი) here, or click to browse
+				{:else}
+					Drop statement or receipt here, or click to browse
+				{/if}
 			</div>
 			<p class="text-xs text-slate-400 mt-1">
-				Files are deduplicated, categorized via Rules → Upstash Vector → LLM, and paused for your approval.
+				{importMode === 'bog'
+					? 'Auto-extracts ობიექტი, MCC codes, transfers, commissions, and reconciles opening & closing balances.'
+					: 'Files are deduplicated, categorized via Rules → Upstash Vector → LLM, and paused for your approval.'}
 			</p>
 		</label>
 	</div>
@@ -264,8 +352,12 @@
 					<div>
 						<div class="flex items-center gap-2.5">
 							<h2 class="text-base font-semibold text-white">{activeBatch.filename}</h2>
-							<span class="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 uppercase">
-								{activeBatch.doc_type}
+							<span
+								class="text-[11px] px-2 py-0.5 rounded-full uppercase font-semibold {activeBatch.doc_type === 'bog_pdf'
+									? 'bg-orange-500/15 text-orange-300 border border-orange-500/30'
+									: 'bg-slate-800 text-slate-300'}"
+							>
+								{docTypeLabel(activeBatch.doc_type)}
 							</span>
 						</div>
 						{#if activeBatch.reconciliation_note}
@@ -350,8 +442,8 @@
 										{:else}
 											<div class="text-xs font-medium text-white">{row.merchant_clean}</div>
 										{/if}
-										<div class="text-[10px] text-slate-500 truncate max-w-[240px] mt-0.5">
-											{row.merchant_raw}
+										<div class="text-[10px] text-slate-500 truncate max-w-[280px] mt-0.5" title={row.description || row.merchant_raw}>
+											{row.description || row.merchant_raw}
 											{#if row.is_duplicate}
 												<span class="ml-1.5 text-amber-400 font-semibold">DUPLICATE</span>
 											{/if}

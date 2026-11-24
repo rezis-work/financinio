@@ -15,6 +15,7 @@ from decimal import Decimal
 from app.ai.graphs.advisor_graph import _heuristic_route
 from app.ai.graphs.ingestion_graph import _heuristic_categorize
 from app.ai.observability import redact_pii
+from app.ai.parsers.bog_pdf import _reconcile_bog_statement, parse_bog_text
 from app.ai.parsers.tabular import parse_tabular_statement
 from app.schemas.planning import DebtInput, DebtPayoffRequest
 from app.services.auth_service import DEFAULT_CATEGORIES
@@ -96,7 +97,29 @@ async def eval_extraction_reconciliation() -> EvalSuiteResult:
             passed += 1
         else:
             details.append(f"FAIL {name}: got {len(rows)} rows net={net}, expected {expected_rows} net={expected_net}")
-    return EvalSuiteResult("extraction_reconciliation", passed, len(csv_cases), details)
+
+    # Bank of Georgia (BOG) Georgian statement extraction & exact balance reconciliation
+    bog_sample = (
+        "ანგარიშიდან ამონაწერი\n"
+        "ანგარიშის ნომერი: GE54BG0000000103288154\n"
+        "საბოლოო ნაშთი:\nსაწყისი ნაშთი:\nGEL\n9.35\n3.71\n"
+        "თარიღი დანიშნულება GEL USD EUR GBP\n"
+        "17/11/2026 ჩარიცხვა - თანხა: GEL42.76; გადმომრიცხავი: კარანაძე რევაზი; დანიშნულება: პირადი გადარიცხვა\n42.76\n"
+        "18/11/2026 გადახდა - თანხა: GEL4.80; ობიექტი: LTD KEEPZ.ME*YANDEX GO, Georgia; MCC:4121; თარიღი: 17/11/2026 17:53\n-4.8\n"
+        "18/11/2026 გადახდა - თანხა: GEL8.60; ობიექტი: LTD KEEPZ.ME*YANDEX GO, Georgia; MCC:4121; თარიღი: 17/11/2026 19:31\n-8.6\n"
+        "19/11/2026 გადარიცხვა - თანხა: GEL34.00; მიმღები: კარანაძე რევაზი; დანიშნულება: საკრედიტო ბარათზე გადარიცხვა\n-34.0\n"
+        "23/11/2026 გადახდა - თანხა GEL1.00; ანგარიშის მომსახურების საკომისიო\n-1.0\n"
+        "შემოსული თანხების ჯამი:\n42.76\n"
+    )
+    bog_rows, bog_meta = parse_bog_text(bog_sample, default_currency="GEL")
+    bog_ok, bog_note = _reconcile_bog_statement(bog_rows, bog_meta)
+    bog_net = sum((r.amount if r.direction == "inflow" else -r.amount for r in bog_rows), Decimal("0.00"))
+    if len(bog_rows) == 5 and bog_net == Decimal("-5.64") and bog_ok is True:
+        passed += 1
+    else:
+        details.append(f"FAIL BOG Georgian PDF: rows={len(bog_rows)} net={bog_net} ok={bog_ok} note={bog_note}")
+
+    return EvalSuiteResult("extraction_reconciliation", passed, len(csv_cases) + 1, details)
 
 
 def eval_categorization() -> EvalSuiteResult:

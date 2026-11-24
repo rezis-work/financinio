@@ -29,6 +29,7 @@ dependencies = [
     "pypdf>=5.1.0",
     "httpx>=0.28.0",
     "boto3>=1.44.7",
+    "pdfplumber>=0.11.11",
 ]
 
 [dependency-groups]

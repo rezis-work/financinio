@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.ai.llm_factory import get_chat_model
 from app.ai.observability import redact_pii
+from app.ai.parsers.bog_pdf import parse_bog_pdf
 from app.ai.parsers.multimodal import parse_multimodal_document
 from app.ai.parsers.tabular import parse_tabular_statement
 from app.services.ledger_service import compute_transaction_fingerprint
@@ -50,7 +51,7 @@ class IngestionState(TypedDict, total=False):
     batch_id: str
     filename: str
     mime_type: str
-    doc_type: Literal["csv", "xlsx", "pdf_statement", "receipt"]
+    doc_type: Literal["csv", "xlsx", "pdf_statement", "bog_pdf", "receipt"]
     file_bytes_b64: str
     categories: list[dict[str, str]]  # [{id, name, kind}]
     rules: list[dict[str, Any]]  # [{match_pattern, match_type, category_id, merchant_override}]
@@ -75,17 +76,18 @@ class BatchCategorizationOutput(BaseModel):
 
 
 _KEYWORD_HEURISTICS: list[tuple[tuple[str, ...], str]] = [
-    (("salary", "payroll", "direct deposit", "paycheck", "gusto", "adp"), "Salary & Payroll"),
-    (("whole foods", "trader joe", "kroger", "aldi", "costco", "grocery", "market", "supermarket", "carrefour"), "Groceries"),
-    (("starbucks", "coffee", "cafe", "mcdonald", "chipotle", "uber eats", "doordash", "restaurant", "pizza", "burger", "wolt", "glovo"), "Dining & Coffee"),
-    (("uber", "lyft", "bolt", "metro", "subway", "shell", "chevron", "exxon", "gas", "fuel", "parking", "transit"), "Transportation & Transit"),
+    (("salary", "payroll", "direct deposit", "paycheck", "gusto", "adp", "ხელფასი"), "Salary & Payroll"),
+    (("whole foods", "trader joe", "kroger", "aldi", "costco", "grocery", "market", "supermarket", "carrefour", "nikora", "spar", "agrohub", "goodwill", "magniti", "ori nabiji", "ნიკორა", "სპარი", "კარფურ"), "Groceries"),
+    (("starbucks", "coffee", "cafe", "mcdonald", "chipotle", "uber eats", "doordash", "restaurant", "pizza", "burger", "wolt", "glovo", "bolt food"), "Dining & Coffee"),
+    (("uber", "lyft", "bolt", "yandex", "metro", "subway", "shell", "chevron", "exxon", "gas", "fuel", "parking", "transit", "wissol", "socar", "gulf", "rompetrol"), "Transportation & Transit"),
     (("netflix", "spotify", "apple.com/bill", "openai", "claude", "github", "notion", "icloud", "youtube", "hulu", "adobe"), "Subscriptions & Software"),
-    (("amazon", "amzn", "target", "walmart", "ikea", "apple store", "zara", "nike", "best buy"), "Shopping & Retail"),
+    (("amazon", "amzn", "target", "walmart", "ikea", "apple store", "zara", "nike", "best buy", "zoommer", "alta", "gorgia", "domino"), "Shopping & Retail"),
     (("rent", "mortgage", "apartment", "hoa", "landlord"), "Housing & Rent"),
-    (("electric", "water", "internet", "comcast", "verizon", "at&t", "t-mobile", "utility", "coned"), "Utilities & Internet"),
-    (("pharmacy", "cvs", "walgreens", "hospital", "clinic", "dental", "doctor", "health"), "Healthcare & Pharmacy"),
-    (("airbnb", "hotel", "delta", "united", "american airlines", "booking.com", "expedia", "flight"), "Travel & Lodging"),
-    (("transfer", "zelle", "venmo", "wise", "revolut"), "Internal Transfer"),
+    (("electric", "water", "internet", "comcast", "verizon", "at&t", "t-mobile", "utility", "coned", "magti", "silknet", "cellfie", "telasi", "მაგთი", "სილქნეტ"), "Utilities & Internet"),
+    (("pharmacy", "cvs", "walgreens", "hospital", "clinic", "dental", "doctor", "health", "psp", "aversi", "gpc", "pharmadepot", "აფთიაქ"), "Healthcare & Pharmacy"),
+    (("airbnb", "hotel", "delta", "united", "american airlines", "booking.com", "expedia", "flight", "wizz air"), "Travel & Lodging"),
+    (("საკომისიო", "service fee", "commission", "ჯარიმა"), "Taxes & Fees"),
+    (("transfer", "zelle", "venmo", "wise", "revolut", "გადარიცხვა", "კონვერტაცია"), "Internal Transfer"),
 ]
 
 
@@ -159,6 +161,12 @@ def build_ingestion_graph(
             )
             reconciled = True
             reconciliation_note = f"Parsed {len(parsed_rows)} rows from {doc_type.upper()}."
+        elif doc_type == "bog_pdf":
+            parsed_rows, extracted_text, reconciled, reconciliation_note = parse_bog_pdf(
+                data=raw_bytes,
+                default_currency=default_ccy or "GEL",
+                strict=True,
+            )
         else:
             parsed_rows, extracted_text, reconciled, reconciliation_note = (
                 await parse_multimodal_document(
@@ -268,6 +276,20 @@ def build_ingestion_graph(
                 row["categorization_source"] = "vector"
                 row["needs_review"] = bool(row["is_duplicate"] or mem_match.score < 0.90)
                 continue
+
+            # Tier 2.5: Deterministic Bank MCC / Structured Statement Hint (e.g. BOG MCC:4121)
+            payload = row.get("raw_payload") or {}
+            bank_cat_hint = payload.get("bog_category_hint")
+            bank_conf_hint = float(payload.get("bog_confidence_hint") or 0.0)
+            if bank_cat_hint and bank_conf_hint >= 0.85:
+                cat = categories_by_lower.get(str(bank_cat_hint).lower())
+                if cat:
+                    row["suggested_category_id"] = cat["id"]
+                    row["suggested_category_name"] = cat["name"]
+                    row["confidence"] = round(bank_conf_hint, 3)
+                    row["categorization_source"] = "bog_mcc" if payload.get("mcc") else "bog_rule"
+                    row["needs_review"] = bool(row["is_duplicate"] or bank_conf_hint < 0.90)
+                    continue
 
             llm_pending_indices.append(idx)
 

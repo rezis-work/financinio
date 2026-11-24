@@ -8,6 +8,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from app.ai.parsers.bog_pdf import is_bog_statement, parse_bog_pdf
 from app.ai.parsers.tabular import (
     ParsedTransactionRow,
     parse_flexible_date,
@@ -63,6 +64,10 @@ async def parse_multimodal_document(
             extracted_text = extract_pdf_text(data)
         except Exception:
             extracted_text = ""
+
+        # Auto-detect Bank of Georgia (BOG) Georgian statements and parse deterministically (0 LLM tokens)
+        if is_bog_statement(extracted_text):
+            return parse_bog_pdf(data, default_currency=default_currency, strict=False)
 
     if llm is None:
         raise ValueError(

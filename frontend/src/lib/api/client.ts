@@ -252,11 +252,26 @@ export const api = {
 	listImportBatches: () => request<ImportBatch[]>('/imports'),
 	getImportBatch: (id: string) => request<ImportBatchDetail>(`/imports/${id}`),
 
-	uploadDocument: (accountId: string, file: File) => {
+	uploadDocument: (
+		accountId: string,
+		file: File,
+		docTypeOverride?: 'csv' | 'xlsx' | 'pdf_statement' | 'bog_pdf' | 'receipt'
+	) => {
+		const form = new FormData();
+		form.append('account_id', accountId);
+		if (docTypeOverride) form.append('doc_type_override', docTypeOverride);
+		form.append('file', file);
+		return request<ImportBatchDetail>('/imports/upload', {
+			method: 'POST',
+			body: form
+		});
+	},
+
+	uploadBogStatement: (accountId: string, file: File) => {
 		const form = new FormData();
 		form.append('account_id', accountId);
 		form.append('file', file);
-		return request<ImportBatchDetail>('/imports/upload', {
+		return request<ImportBatchDetail>('/imports/bog', {
 			method: 'POST',
 			body: form
 		});

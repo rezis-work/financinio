@@ -29,7 +29,8 @@ def compute_transaction_fingerprint(
     direction: str,
     merchant_raw: str,
 ) -> str:
-    normalized = re.sub(r"[^a-z0-9]", "", merchant_raw.lower())[:48]
+    # Keep Unicode letters/digits (e.g., Georgian Mkhedruli) so non-Latin merchants never collide
+    normalized = re.sub(r"[\W_]+", "", merchant_raw.lower())[:64]
     canonical = f"{account_id}|{occurred_at.isoformat()}|{amount:.2f}|{direction}|{normalized}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
