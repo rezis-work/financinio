@@ -213,6 +213,7 @@
 					}
 					streamingText = '';
 					statusLabel = null;
+					streaming = false;
 					scrollToBottom(true);
 				},
 				onError: (detail) => {
@@ -220,13 +221,13 @@
 				}
 			});
 
-			const [ths, mems] = await Promise.all([
-				api.listThreads(),
-				api.listMemories(),
-				auth.hydrate()
-			]);
-			threads = ths;
-			memories = mems;
+			// Refresh thread titles, memories, and sidebar token meter silently in the background
+			Promise.all([api.listThreads(), api.listMemories(), auth.refresh()])
+				.then(([ths, mems]) => {
+					threads = ths;
+					memories = mems;
+				})
+				.catch(() => null);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Unable to reach Luna right now.';
 		} finally {
@@ -278,7 +279,7 @@
 		try {
 			await api.generateInsights();
 			insights = await api.listInsights();
-			await auth.hydrate();
+			await auth.refresh();
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Insight generation failed';
 		} finally {

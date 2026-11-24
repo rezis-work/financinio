@@ -75,7 +75,7 @@
 			const updated = await api.adminUpdateUserAccess(u.id, { has_unlimited_ai: nextVal });
 			users = users.map((row) => (row.id === u.id ? updated : row));
 			overview = await api.adminOverview();
-			if (u.id === auth.user?.id) await auth.hydrate();
+			if (u.id === auth.user?.id) await auth.refresh();
 			notice = nextVal
 				? `Granted Unlimited Full AI Access to ${u.email}.`
 				: `Reverted ${u.email} to fixed token limit (${u.ai_token_limit.toLocaleString()}).`;
@@ -125,7 +125,7 @@
 			});
 			users = users.map((row) => (row.id === updated.id ? updated : row));
 			overview = await api.adminOverview();
-			if (updated.id === auth.user?.id) await auth.hydrate();
+			if (updated.id === auth.user?.id) await auth.refresh();
 			notice = `Updated access & quota for ${updated.email}.`;
 			editingUser = null;
 		} catch (err) {

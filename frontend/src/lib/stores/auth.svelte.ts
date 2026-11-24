@@ -11,7 +11,12 @@ class AuthStore {
 			this.loading = false;
 			return null;
 		}
-		this.loading = true;
+		// Only show the full-screen loading gate on initial cold boot (when user is not yet loaded).
+		// Never flip loading=true when already authenticated, or (app)/+layout.svelte will unmount the active page!
+		const isColdBoot = this.user === null;
+		if (isColdBoot) {
+			this.loading = true;
+		}
 		try {
 			this.user = await api.me();
 			return this.user;
@@ -20,7 +25,20 @@ class AuthStore {
 			this.user = null;
 			return null;
 		} finally {
-			this.loading = false;
+			if (isColdBoot) {
+				this.loading = false;
+			}
+		}
+	}
+
+	async refresh(): Promise<User | null> {
+		if (!getStoredAccessToken()) return this.user;
+		try {
+			this.user = await api.me();
+			return this.user;
+		} catch {
+			// Keep existing session on transient background refresh failures
+			return this.user;
 		}
 	}
 
