@@ -232,6 +232,7 @@ export const api = {
 		merchant: string;
 		description?: string;
 		notes?: string;
+		tags?: string[];
 		is_transfer?: boolean;
 		transfer_account_id?: string | null;
 	}) => request<Transaction>('/transactions', { method: 'POST', body: JSON.stringify(payload) }),
@@ -239,13 +240,32 @@ export const api = {
 	updateTransaction: (
 		id: string,
 		payload: Partial<{
+			account_id: string;
 			category_id: string | null;
 			merchant_clean: string;
-			notes: string;
+			description: string | null;
+			notes: string | null;
+			tags: string[];
+			is_transfer: boolean;
+			occurred_at: string;
 			amount: string;
 			direction: 'inflow' | 'outflow';
 		}>
 	) => request<Transaction>(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+	bulkCategorizeTransactions: (
+		transactionIds: string[],
+		categoryId: string | null,
+		learnMemory = true
+	) =>
+		request<{ updated: number }>('/transactions/bulk-categorize', {
+			method: 'POST',
+			body: JSON.stringify({
+				transaction_ids: transactionIds,
+				category_id: categoryId,
+				learn_memory: learnMemory
+			})
+		}),
 
 	deleteTransaction: (id: string) => request<void>(`/transactions/${id}`, { method: 'DELETE' }),
 
