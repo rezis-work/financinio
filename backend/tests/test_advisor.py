@@ -219,3 +219,62 @@ async def test_senior_cfp_health_score_and_decision_advisor(
         assert "Senior CFP Diagnostic" in citation_sources
         assert "Affordability Engine" in citation_sources
         assert "AFFORDABLE" in done_msg["content"] or "Verdict" in done_msg["content"]
+
+
+def test_web_researcher_routing_and_grounding_extraction() -> None:
+    from langchain_core.messages import AIMessage
+
+    from app.ai.graphs.advisor_graph import (
+        _extract_ai_text,
+        _extract_grounding_citations,
+        _heuristic_route,
+    )
+
+    assert _heuristic_route("Find me a 2-bedroom apartment to rent in Vake Tbilisi", "auto") == "web_researcher"
+    assert _heuristic_route("What is my balance?", "on") == "web_researcher"
+    assert _heuristic_route("Find me a 2-bedroom apartment to rent in Vake Tbilisi", "off") != "web_researcher"
+
+    fake_resp = AIMessage(
+        content=[{"type": "text", "text": "Found 2 great apartments within your budget."}],
+        response_metadata={
+            "grounding_metadata": {
+                "web_search_queries": ["2 bedroom apartment rent Vake Tbilisi myhome.ge"],
+                "grounding_chunks": [
+                    {"web": {"uri": "https://www.myhome.ge/en/pr/12345", "title": "myhome.ge"}},
+                    {"web": {"uri": "https://ss.ge/en/real-estate/999", "title": "2-Room Flat Vake — ss.ge"}},
+                    {"web": {"uri": "https://www.myhome.ge/en/pr/12345", "title": "duplicate"}},
+                ],
+            }
+        },
+    )
+    assert _extract_ai_text(fake_resp) == "Found 2 great apartments within your budget."
+    cits, queries = _extract_grounding_citations(fake_resp)
+    assert queries == ["2 bedroom apartment rent Vake Tbilisi myhome.ge"]
+    assert len(cits) == 2
+    assert cits[0]["url"] == "https://www.myhome.ge/en/pr/12345"
+    assert cits[0]["domain"] == "myhome.ge"
+    assert cits[1]["source"] == "Web Source"
+
+
+@pytest.mark.asyncio
+async def test_web_researcher_stream_endpoint(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    with patch("app.ai.graphs.advisor_graph.get_chat_model", return_value=None):
+        th = (
+            await client.post("/api/v1/advisor/threads", headers=auth_headers, json={})
+        ).json()
+        resp = await client.post(
+            f"/api/v1/advisor/threads/{th['id']}/stream",
+            headers=auth_headers,
+            json={
+                "message": "Search for a 2-bedroom apartment to rent in Saburtalo Tbilisi",
+                "web_search_mode": "auto",
+            },
+        )
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+        done_msg = next(p["message"] for name, p in events if name == "done")
+        assert done_msg["active_agent"] == "web_researcher"
+        assert any(c["source"] == "CFP Budget Guardrail" for c in done_msg["citations"])
+        assert "30% Rule" in done_msg["content"]

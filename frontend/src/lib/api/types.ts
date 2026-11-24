@@ -352,6 +352,8 @@ export interface WhatIfResponse {
 export interface ChatCitation {
 	source: string;
 	label: string;
+	url?: string;
+	domain?: string;
 }
 
 export interface ChatMessage {

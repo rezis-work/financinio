@@ -487,7 +487,8 @@ export const api = {
 			onActionRequired?: (msg: ChatMessage) => void;
 			onDone?: (msg: ChatMessage) => void;
 			onError?: (detail: string) => void;
-		}
+		},
+		options: { webSearchMode?: 'auto' | 'on' | 'off' } = {}
 	): Promise<void> => {
 		let token = getStoredAccessToken();
 		const doFetch = (authTok: string | null) =>
@@ -498,7 +499,10 @@ export const api = {
 					...(authTok ? { Authorization: `Bearer ${authTok}` } : {})
 				},
 				credentials: 'include',
-				body: JSON.stringify({ message })
+				body: JSON.stringify({
+					message,
+					web_search_mode: options.webSearchMode ?? 'auto'
+				})
 			});
 
 		let res = await doFetch(token);

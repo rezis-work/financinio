@@ -39,6 +39,7 @@ class ChatThreadDetailResponse(ChatThreadResponse):
 
 class ChatSendRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+    web_search_mode: Literal["auto", "on", "off"] = "auto"
 
 
 class ActionDecisionRequest(BaseModel):

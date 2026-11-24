@@ -31,7 +31,9 @@
 		PanelLeft,
 		X,
 		ArrowDown,
-		ShieldCheck
+		ShieldCheck,
+		Globe,
+		ExternalLink
 	} from 'lucide-svelte';
 
 	let sideTab = $state<'chats' | 'insights' | 'memory'>('chats');
@@ -46,6 +48,7 @@
 	let healthProfile = $state<FinancialHealthProfile | null>(null);
 
 	let inputText = $state('');
+	let webSearchMode = $state<'auto' | 'on' | 'off'>('auto');
 	let streaming = $state(false);
 	let statusLabel = $state<string | null>(null);
 	let streamingText = $state('');
@@ -61,6 +64,10 @@
 
 	const STARTER_PROMPTS = [
 		{
+			title: 'Search Apartments in My Budget',
+			prompt: 'Search for 2-bedroom apartments to rent in Tbilisi (Saburtalo or Vake) that fit my real monthly budget and show affordability verdicts'
+		},
+		{
 			title: 'Senior Financial Health Checkup',
 			prompt: 'Run a full Senior Financial Advisor checkup on my finances and give me my top 3 priorities'
 		},
@@ -71,12 +78,14 @@
 		{
 			title: 'Find Spending Leaks',
 			prompt: 'Where am I leaking money and how can I boost my savings rate?'
-		},
-		{
-			title: 'Debt vs. Savings Strategy',
-			prompt: 'Compare Snowball vs Avalanche on my debts and tell me what to prioritize first'
 		}
 	];
+
+	function cycleWebSearchMode() {
+		if (webSearchMode === 'auto') webSearchMode = 'on';
+		else if (webSearchMode === 'on') webSearchMode = 'off';
+		else webSearchMode = 'auto';
+	}
 
 	const QUICK_FOLLOWUPS = [
 		'Give me a concrete 30-day action plan',
@@ -122,7 +131,8 @@
 			memories = mems;
 			healthProfile = health;
 
-			const initialQuery = page.url.searchParams.get('q');
+			const initialQuery =
+				page.url.searchParams.get('q') || page.url.searchParams.get('prompt');
 			if (initialQuery && initialQuery.trim()) {
 				await createNewThread();
 				goto('/advisor', { replaceState: true });
@@ -194,32 +204,37 @@
 			messages = [...messages, tempUserMsg];
 			await scrollToBottom(true);
 
-			await api.streamAdvisorMessage(tid, text, {
-				onStatus: (label) => {
-					statusLabel = label;
-				},
-				onToken: (chunk) => {
-					streamingText += chunk;
-					scrollToBottom();
-				},
-				onActionRequired: (msg) => {
-					messages = [...messages, msg];
-					streamingText = '';
-					scrollToBottom(true);
-				},
-				onDone: (msg) => {
-					if (!messages.some((m) => m.id === msg.id)) {
+			await api.streamAdvisorMessage(
+				tid,
+				text,
+				{
+					onStatus: (label) => {
+						statusLabel = label;
+					},
+					onToken: (chunk) => {
+						streamingText += chunk;
+						scrollToBottom();
+					},
+					onActionRequired: (msg) => {
 						messages = [...messages, msg];
+						streamingText = '';
+						scrollToBottom(true);
+					},
+					onDone: (msg) => {
+						if (!messages.some((m) => m.id === msg.id)) {
+							messages = [...messages, msg];
+						}
+						streamingText = '';
+						statusLabel = null;
+						streaming = false;
+						scrollToBottom(true);
+					},
+					onError: (detail) => {
+						error = detail;
 					}
-					streamingText = '';
-					statusLabel = null;
-					streaming = false;
-					scrollToBottom(true);
 				},
-				onError: (detail) => {
-					error = detail;
-				}
-			});
+				{ webSearchMode }
+			);
 
 			// Refresh thread titles, memories, and sidebar token meter silently in the background
 			Promise.all([api.listThreads(), api.listMemories(), auth.refresh()])
@@ -317,6 +332,7 @@
 		if (agent === 'document_rag') return 'Document & Memory RAG';
 		if (agent === 'wealth_strategist') return 'Wealth Strategist';
 		if (agent === 'action_proposer') return 'Action Agent (HITL)';
+		if (agent === 'web_researcher') return 'Live Web Researcher';
 		return 'Luna Personal CFO';
 	}
 
@@ -553,7 +569,7 @@
 						{activeThread ? activeThread.title : 'Luna · Senior Personal CFO'}
 					</div>
 					<div class="text-[11px] text-slate-400 hidden sm:block">
-						CFP Decision Engine · Verified Neon Ledger · Upstash RAG
+						CFP Decision Engine · Live Web Search · Verified Neon Ledger
 					</div>
 				</div>
 			</div>
@@ -746,15 +762,51 @@
 										</div>
 									{/if}
 
-									<!-- Citations -->
+									<!-- Citations & Clickable Web Sources -->
 									{#if msg.citations && msg.citations.length > 0}
-										<div class="flex flex-wrap gap-1.5">
-											{#each msg.citations as cit}
-												<span class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-slate-400">
-													<strong class="text-slate-300">{cit.source}:</strong> {cit.label}
-												</span>
-											{/each}
-										</div>
+										{@const webSources = msg.citations.filter((c) => Boolean(c.url))}
+										{@const metaCitations = msg.citations.filter((c) => !c.url)}
+
+										{#if webSources.length > 0}
+											<div class="space-y-1.5">
+												<div class="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-cyan-400">
+													<Globe class="w-3 h-3" />
+													Live Web Sources ({webSources.length})
+												</div>
+												<div class="grid sm:grid-cols-2 gap-2">
+													{#each webSources as src}
+														<a
+															href={src.url}
+															target="_blank"
+															rel="noopener noreferrer"
+															class="group/link flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-900 border border-slate-800 hover:border-cyan-500/45 transition"
+														>
+															<div class="min-w-0">
+																<div class="text-xs font-medium text-slate-200 group-hover/link:text-cyan-300 truncate">
+																	{src.label}
+																</div>
+																{#if src.domain}
+																	<div class="text-[10px] text-slate-500 truncate mt-0.5">
+																		{src.domain}
+																	</div>
+																{/if}
+															</div>
+															<ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover/link:text-cyan-400 shrink-0" />
+														</a>
+													{/each}
+												</div>
+											</div>
+										{/if}
+
+										{#if metaCitations.length > 0}
+											<div class="flex flex-wrap gap-1.5">
+												{#each metaCitations as cit}
+													<span class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-slate-400">
+														<strong class="text-slate-300">{cit.source}:</strong> {cit.label}
+													</span>
+												{/each}
+											</div>
+										{/if}
 									{/if}
 								</div>
 							</div>
@@ -818,6 +870,26 @@
 				class="max-w-3xl mx-auto"
 			>
 				<div class="flex items-end gap-2 p-2 rounded-2xl bg-slate-900/90 border border-slate-800 focus-within:border-emerald-500/60 transition shadow-inner">
+					<button
+						type="button"
+						onclick={cycleWebSearchMode}
+						disabled={streaming}
+						title={webSearchMode === 'auto'
+							? 'Web Search: Auto (Luna searches Google automatically when you ask for apartments, prices, or live rates)'
+							: webSearchMode === 'on'
+								? 'Web Search: Always On (Forces live Google Search + your budget check)'
+								: 'Web Search: Off (100% local Neon ledger & Upstash memory only)'}
+						class="h-10 px-2.5 sm:px-3 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition disabled:opacity-45 {webSearchMode === 'on'
+							? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+							: webSearchMode === 'auto'
+								? 'bg-slate-950/90 border-slate-700/80 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300'
+								: 'bg-slate-950/60 border-slate-800 text-slate-500 hover:text-slate-300'}"
+					>
+						<Globe class="w-3.5 h-3.5 {webSearchMode === 'on' ? 'text-cyan-300' : webSearchMode === 'auto' ? 'text-emerald-400' : 'text-slate-500'}" />
+						<span class="hidden sm:inline">
+							{webSearchMode === 'on' ? 'Web On' : webSearchMode === 'auto' ? 'Web Auto' : 'Web Off'}
+						</span>
+					</button>
 					<textarea
 						bind:this={textareaEl}
 						bind:value={inputText}
@@ -825,8 +897,10 @@
 						onkeydown={handleComposerKeydown}
 						disabled={streaming}
 						rows={1}
-						placeholder="Ask Luna: 'Can I afford a $1,200 trip?' or 'Where am I leaking money?'"
-						class="flex-1 bg-transparent px-2.5 py-2 text-[15px] text-white placeholder:text-slate-500 focus:outline-none resize-none max-h-40 leading-relaxed"
+						placeholder={webSearchMode === 'on'
+							? "Search live web + budget: 'Find 2-bed apartments in Vake under my rent cap'"
+							: "Ask Luna: 'Find apartments in Tbilisi in my budget' or 'Can I afford a $1,200 trip?'"}
+						class="flex-1 bg-transparent px-2 py-2 text-[15px] text-white placeholder:text-slate-500 focus:outline-none resize-none max-h-40 leading-relaxed"
 					></textarea>
 					<button
 						type="submit"

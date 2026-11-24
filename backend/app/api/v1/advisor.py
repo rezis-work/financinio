@@ -49,6 +49,7 @@ NODE_STATUS_LABELS: dict[str, str] = {
     "document_rag": "Searching your receipts & statements in Upstash Vector...",
     "wealth_strategist": "Wealth Strategist is running deterministic simulations...",
     "action_proposer": "Preparing action proposal for your approval...",
+    "web_researcher": "Searching the live web & matching against your budget...",
     "general": "Luna is analyzing...",
 }
 
@@ -176,7 +177,12 @@ async def stream_advisor_reply(
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        yield _sse_event("status", {"node": "start", "label": "Luna is analyzing your request..."})
+        initial_label = (
+            "Luna is searching the live web & checking your budget..."
+            if payload.web_search_mode == "on"
+            else "Luna is analyzing your request..."
+        )
+        yield _sse_event("status", {"node": "start", "label": initial_label})
 
         final_content = ""
         active_agent = "general"
@@ -189,6 +195,7 @@ async def stream_advisor_reply(
                     "messages": [HumanMessage(content=user_text)],
                     "user_id": str(current_user.id),
                     "base_currency": current_user.base_currency,
+                    "web_search_mode": payload.web_search_mode,
                 },
                 config=lg_config,
                 stream_mode="updates",

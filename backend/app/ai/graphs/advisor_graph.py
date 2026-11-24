@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal, TypedDict
+from urllib.parse import urlparse
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
@@ -45,14 +46,18 @@ RouteName = Literal[
     "document_rag",
     "wealth_strategist",
     "action_proposer",
+    "web_researcher",
     "general",
 ]
+
+WebSearchMode = Literal["auto", "on", "off"]
 
 
 class AdvisorState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     user_id: str
     base_currency: str
+    web_search_mode: WebSearchMode
     route: RouteName
     active_agent: str
     recalled_memories: list[str]
@@ -66,12 +71,13 @@ class RouteDecision(BaseModel):
     route: RouteName = Field(
         description=(
             "Choose 'action_proposer' ONLY if the user explicitly asks to create/set/add a budget, financial goal, or categorization rule in the app. "
+            "Choose 'web_researcher' if the user asks to search the live web or find current external listings, apartments/rent/real estate, product prices, deals, flights/hotels, bank deposit/mortgage/interest rates, exchange rates, or up-to-date tax/market info. "
             "Choose 'decision_advisor' if the user asks for spending advice, affordability ('can I afford...', 'should I buy...'), "
             "financial checkup/audit/health score, where they are wasting/leaking money, how to save more, or prioritizing debt vs savings vs investing. "
             "Choose 'document_rag' if the user asks to find/search an uploaded receipt, PDF statement, invoice, warranty, or asks you to remember a personal preference/fact. "
             "Choose 'wealth_strategist' if the user specifically asks about net worth history, financial goals progress, Snowball vs Avalanche debt payoff math, or What-If cash flow projections. "
             "Choose 'ledger_analyst' if the user asks factual lookups about spending totals, income, specific transactions, merchants, account balances, budgets, or recurring bills. "
-            "Choose 'general' for conceptual personal finance questions that do not need personal account analysis."
+            "Choose 'general' for conceptual personal finance questions that do not need personal account analysis or live web search."
         )
     )
     reasoning: str = Field(description="Brief one-sentence routing explanation")
@@ -113,12 +119,111 @@ def _last_user_text(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def _heuristic_route(text: str) -> RouteName:
+def _extract_ai_text(resp: Any) -> str:
+    """Safely extract markdown text from a LangChain AIMessage (handles string or Gemini content blocks)."""
+    content = getattr(resp, "content", resp)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+        return "\n".join(p for p in parts if p).strip()
+    return str(content)
+
+
+def _extract_grounding_citations(resp: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """Extract clickable web source citations and search queries from Gemini grounding_metadata."""
+    resp_meta = getattr(resp, "response_metadata", None) or {}
+    gm = resp_meta.get("grounding_metadata") or {}
+    if not isinstance(gm, dict):
+        return [], []
+
+    queries = [str(q).strip() for q in (gm.get("web_search_queries") or []) if str(q).strip()]
+    chunks = gm.get("grounding_chunks") or []
+    web_citations: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        web = ch.get("web")
+        if not isinstance(web, dict):
+            continue
+        uri = str(web.get("uri") or "").strip()
+        title = str(web.get("title") or "").strip()
+        if not uri or uri in seen_urls:
+            continue
+        seen_urls.add(uri)
+        parsed = urlparse(uri)
+        domain = parsed.netloc.replace("www.", "") if parsed.netloc else ""
+        # Gemini grounding sometimes returns a vertexaisearch redirect URL while title holds the domain/page name
+        display_domain = title if ("." in title and " " not in title) else (domain or "Web")
+        label = title or domain or "Web Result"
+        web_citations.append(
+            {
+                "source": "Web Source",
+                "label": label[:120],
+                "url": uri,
+                "domain": display_domain[:64],
+            }
+        )
+        if len(web_citations) >= 8:
+            break
+
+    return web_citations, queries
+
+
+def _heuristic_route(text: str, web_search_mode: WebSearchMode = "auto") -> RouteName:
     low = text.lower()
+    if web_search_mode == "on":
+        return "web_researcher"
     has_write_verb = any(v in low for v in ("create", "set ", "add ", "make "))
     has_action_noun = any(n in low for n in ("budget", "goal", "rule"))
     if has_write_verb and has_action_noun:
         return "action_proposer"
+    if web_search_mode != "off" and any(
+        k in low
+        for k in (
+            "search for",
+            "search the web",
+            "search online",
+            "find me ",
+            "find a ",
+            "find an ",
+            "look up ",
+            "browse ",
+            "apartment",
+            "apartments",
+            "flat to rent",
+            "rent in ",
+            "for rent",
+            "for sale",
+            "real estate",
+            "myhome",
+            "ss.ge",
+            "korter",
+            "airbnb",
+            "mortgage rate",
+            "deposit rate",
+            "interest rate",
+            "exchange rate",
+            "nbg rate",
+            "current price",
+            "price of ",
+            "cheapest ",
+            "best deal",
+            "flight to ",
+            "flights to ",
+            "hotel in ",
+            "hotels in ",
+            "compare prices",
+        )
+    ):
+        return "web_researcher"
     if any(
         k in low
         for k in (
@@ -603,14 +708,28 @@ def build_advisor_graph(
 
     async def supervisor_router_node(state: AdvisorState) -> dict[str, Any]:
         query = _last_user_text(state.get("messages", []))
-        route: RouteName = _heuristic_route(query)
+        web_mode: WebSearchMode = state.get("web_search_mode") or "auto"
+        route: RouteName = _heuristic_route(query, web_mode)
+
+        # If the user explicitly forced live web search ON, go straight to web_researcher
+        if web_mode == "on":
+            return {"route": "web_researcher", "active_agent": "web_researcher"}
+
         if model is not None:
             try:
                 router_llm = model.with_structured_output(RouteDecision)
+                web_hint = (
+                    " Live web search is DISABLED by the user — do NOT choose 'web_researcher'."
+                    if web_mode == "off"
+                    else ""
+                )
                 decision: RouteDecision = await router_llm.ainvoke(  # type: ignore[assignment]
                     [
                         SystemMessage(
-                            content="You are the Supervisor Router for Luna, a Senior Personal Finance Advisor & CFO. Pick the best specialist agent."
+                            content=(
+                                "You are the Supervisor Router for Luna, a Senior Personal Finance Advisor & CFO. "
+                                f"Pick the best specialist agent.{web_hint}"
+                            )
                         ),
                         HumanMessage(content=query),
                     ]
@@ -618,6 +737,10 @@ def build_advisor_graph(
                 route = decision.route
             except Exception as exc:
                 logger.warning("Supervisor router LLM failed, using heuristic: %s", exc)
+
+        if web_mode == "off" and route == "web_researcher":
+            route = _heuristic_route(query, "off")
+
         return {"route": route, "active_agent": route}
 
     async def decision_advisor_node(state: AdvisorState) -> dict[str, Any]:
@@ -901,6 +1024,120 @@ def build_advisor_graph(
             "citations": [{"source": "HITL Action Executed", "label": f"Saved {result.get('entity')} to Neon"}],
         }
 
+    async def web_researcher_node(state: AdvisorState) -> dict[str, Any]:
+        """Live Google Search Grounded Research Agent combined with user's real budget limits."""
+        query = _last_user_text(state.get("messages", []))
+        profile = await compute_financial_health_profile(db, user)
+        cf = profile["cash_flow_ratios"]
+        bs = profile["balance_sheet"]
+
+        avg_income = Decimal(str(cf.get("avg_monthly_income") or "0"))
+        safe_housing_30 = (avg_income * Decimal("0.30")).quantize(Decimal("0.01"))
+        safe_housing_25 = (avg_income * Decimal("0.25")).quantize(Decimal("0.01"))
+
+        # Strict PII guardrail: pass ONLY anonymized numeric affordability benchmarks
+        budget_benchmarks = {
+            "as_of": date.today().isoformat(),
+            "base_currency": user.base_currency,
+            "avg_monthly_income": cf["avg_monthly_income"],
+            "avg_monthly_expenses": cf["avg_monthly_expenses"],
+            "avg_monthly_surplus": cf["avg_monthly_surplus"],
+            "safe_housing_rent_cap_25pct": f"{safe_housing_25:.2f}",
+            "safe_housing_rent_cap_30pct": f"{safe_housing_30:.2f}",
+            "liquid_cash_available": bs["liquid_cash"],
+            "emergency_runway_months": cf["emergency_runway_months"],
+            "safe_to_spend_this_month": cf["safe_to_spend_remaining_this_month"],
+        }
+
+        citations: list[dict[str, Any]] = [
+            {
+                "source": "CFP Budget Guardrail",
+                "label": (
+                    f"Safe housing ≤ {user.base_currency} {safe_housing_30:.0f}/mo · "
+                    f"Surplus {user.base_currency} {cf['avg_monthly_surplus']}/mo"
+                ),
+            }
+        ]
+
+        if model is not None:
+            sys_prompt = (
+                f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
+                "Active Specialist: **Live Web Research & Budget Match Agent (Google Search Grounded)**.\n"
+                "PRIVACY RULE: NEVER include the user's personal identity or raw account info in web searches — use only generic public search terms (city, neighborhood, price range, currency, product/service).\n\n"
+                f"User's Real Financial Affordability Benchmarks (JSON):\n{json.dumps(budget_benchmarks, indent=2)}\n\n"
+                "RESEARCH & RESPONSE INSTRUCTIONS:\n"
+                "1. Use **Google Search** to find current, real-world results matching the user's request "
+                "(for Georgia/Tbilisi housing, check major portals like myhome.ge, ss.ge, korter.ge; for banking/rates check nbg.gov.ge, bog.ge, tbcbank.ge; for products/travel use reputable current listings).\n"
+                "2. Open with a crisp **Budget Ceiling & Search Verdict** tying their real monthly income/surplus or liquid cash to current market prices.\n"
+                "3. Present real options, market price ranges, or listings found in a clean **Markdown table** with:\n"
+                "   - Option / Listing / Neighborhood / Provider\n"
+                "   - Current Price / Rate\n"
+                "   - **Budget Fit Verdict** (e.g., `Fits (24% of income)`, `Tight (33%)`, or `Over Budget`)\n"
+                "   - Direct source link when available (NEVER invent or guess fake listing URLs — only use real URLs returned by search or top-level portal links).\n"
+                "4. Close with 2–3 concrete next steps (e.g., offer to set up a moving/purchase savings goal right in chat)."
+            )
+
+            search_model: Any = model
+            used_google_search = False
+            if (
+                model.__class__.__name__ == "ChatGoogleGenerativeAI"
+                and hasattr(model, "bind_tools")
+            ):
+                try:
+                    search_model = model.bind_tools([{"google_search": {}}])
+                    used_google_search = True
+                except Exception as exc:
+                    logger.warning("Failed to bind google_search tool, falling back: %s", exc)
+
+            try:
+                resp = await search_model.ainvoke(
+                    [SystemMessage(content=sys_prompt), *state["messages"][-6:]]
+                )
+            except Exception as exc:
+                if used_google_search:
+                    logger.warning("Google Search grounded call failed, retrying ungrounded: %s", exc)
+                    resp = await model.ainvoke(
+                        [SystemMessage(content=sys_prompt), *state["messages"][-6:]]
+                    )
+                else:
+                    raise
+
+            answer = _extract_ai_text(resp)
+            web_cits, search_queries = _extract_grounding_citations(resp)
+            if search_queries:
+                citations.append(
+                    {
+                        "source": "Google Search",
+                        "label": " · ".join(search_queries[:3])[:140],
+                    }
+                )
+            elif used_google_search:
+                citations.append(
+                    {
+                        "source": "Google Search",
+                        "label": "Live web grounding enabled",
+                    }
+                )
+            citations.extend(web_cits)
+        else:
+            answer = (
+                f"### Live Web Research + Budget Fit ({user.base_currency})\n\n"
+                f"Based on your verified Neon ledger, here are your real affordability guardrails for **\"{query}\"**:\n\n"
+                "| Budget Benchmark | Value |\n"
+                "| :--- | ---: |\n"
+                f"| Safe Monthly Housing (30% Rule) | `{user.base_currency} {safe_housing_30:.2f}/mo` |\n"
+                f"| Avg Monthly Surplus | `{user.base_currency} {cf['avg_monthly_surplus']}/mo` |\n"
+                f"| Liquid Cash Available | `{user.base_currency} {bs['liquid_cash']}` |\n"
+                f"| Emergency Runway | `{cf['emergency_runway_months']} months` |\n\n"
+                "*(Live Google Search grounding requires a configured `GOOGLE_API_KEY` on the server.)*"
+            )
+
+        return {
+            "messages": [AIMessage(content=answer)],
+            "active_agent": "web_researcher",
+            "citations": citations,
+        }
+
     async def general_coach_node(state: AdvisorState) -> dict[str, Any]:
         memories = state.get("recalled_memories", [])
         health = await compute_financial_health_profile(db, user)
@@ -913,11 +1150,12 @@ def build_advisor_graph(
                 "Give practical, senior-level financial guidance tailored to their situation."
             )
             resp = await model.ainvoke([SystemMessage(content=sys_prompt), *state["messages"][-8:]])
-            answer = str(resp.content)
+            answer = _extract_ai_text(resp)
         else:
             answer = (
                 "Hi! I'm **Luna**, your Senior Financial Advisor. Ask me whether you can afford a purchase, "
-                "for a full Financial Health Checkup, to find spending leaks, or to create a budget or goal!"
+                "to search live apartments or prices in your budget, run a Financial Health Checkup, "
+                "find spending leaks, or create a budget or goal!"
             )
         return {
             "messages": [AIMessage(content=answer)],
@@ -936,6 +1174,7 @@ def build_advisor_graph(
     graph.add_node("document_rag", document_rag_node)
     graph.add_node("wealth_strategist", wealth_strategist_node)
     graph.add_node("action_proposer", action_proposer_node)
+    graph.add_node("web_researcher", web_researcher_node)
     graph.add_node("general", general_coach_node)
 
     graph.add_edge(START, "recall_memory")
@@ -949,6 +1188,7 @@ def build_advisor_graph(
             "document_rag": "document_rag",
             "wealth_strategist": "wealth_strategist",
             "action_proposer": "action_proposer",
+            "web_researcher": "web_researcher",
             "general": "general",
         },
     )
@@ -957,6 +1197,7 @@ def build_advisor_graph(
     graph.add_edge("document_rag", END)
     graph.add_edge("wealth_strategist", END)
     graph.add_edge("action_proposer", END)
+    graph.add_edge("web_researcher", END)
     graph.add_edge("general", END)
 
     saver = checkpointer if checkpointer is not None else MemorySaver()
