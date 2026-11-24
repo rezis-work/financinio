@@ -22,6 +22,7 @@ class AccountUpdate(BaseModel):
     type: AccountType | None = None
     institution: str | None = Field(default=None, max_length=120)
     color: str | None = Field(default=None, max_length=16)
+    initial_balance: Decimal | None = None
     is_archived: bool | None = None
 
 

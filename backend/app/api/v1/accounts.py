@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -9,6 +10,7 @@ from app.core.database import get_db
 from app.models.finance import Account
 from app.models.user import User
 from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate
+from app.services.ledger_service import recalculate_account_balance
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
@@ -70,6 +72,9 @@ async def update_account(
         account.institution = payload.institution.strip() or None
     if payload.color is not None:
         account.color = payload.color
+    if payload.initial_balance is not None:
+        account.initial_balance = payload.initial_balance.quantize(Decimal("0.01"))
+        await recalculate_account_balance(db, account)
     if payload.is_archived is not None:
         account.is_archived = payload.is_archived
 

@@ -117,3 +117,28 @@ async def test_accounts_transactions_transfers_and_dashboard(
     assert dash["period_income"] == "4000.00"
     assert dash["period_expenses"] == "150.00"
     assert dash["period_net"] == "3850.00"
+
+    # Update initial_balance -> recalculates current_balance automatically
+    patch_res = await client.patch(
+        f"/api/v1/accounts/{chk['id']}",
+        headers=auth_headers,
+        json={"initial_balance": "2500.00", "color": "#f97316"},
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["current_balance"] == "6000.00"  # 2500 + 4000 - 500
+    assert patch_res.json()["color"] == "#f97316"
+
+    # Archive & restore account
+    arch = await client.patch(
+        f"/api/v1/accounts/{cc['id']}",
+        headers=auth_headers,
+        json={"is_archived": True},
+    )
+    assert arch.status_code == 200
+    assert arch.json()["is_archived"] is True
+    active_list = (await client.get("/api/v1/accounts", headers=auth_headers)).json()
+    assert all(a["id"] != cc["id"] for a in active_list)
+    full_list = (
+        await client.get("/api/v1/accounts?include_archived=true", headers=auth_headers)
+    ).json()
+    assert any(a["id"] == cc["id"] and a["is_archived"] for a in full_list)

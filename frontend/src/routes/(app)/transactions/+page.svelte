@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { api, ApiError } from '$lib/api/client';
 	import type { Account, Category, Transaction } from '$lib/api/types';
 	import { formatDate, formatMoney } from '$lib/utils/format';
@@ -36,6 +37,10 @@
 	async function loadAll() {
 		loading = true;
 		error = null;
+		const paramAccId = page.url.searchParams.get('account');
+		if (paramAccId && !filterAccount) {
+			filterAccount = paramAccId;
+		}
 		try {
 			const [accs, cats, txRes] = await Promise.all([
 				api.listAccounts(),

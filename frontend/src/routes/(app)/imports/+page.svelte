@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { api, ApiError } from '$lib/api/client';
 	import type {
 		Account,
@@ -52,7 +53,10 @@
 			accounts = accs;
 			categories = cats;
 			batches = list;
-			if (!selectedAccountId && accs.length > 0) {
+			const paramAccId = page.url.searchParams.get('account');
+			if (paramAccId && accs.some((a) => a.id === paramAccId)) {
+				selectedAccountId = paramAccId;
+			} else if (!selectedAccountId && accs.length > 0) {
 				const gelOrBog = accs.find(
 					(a) =>
 						a.currency.toUpperCase() === 'GEL' ||
