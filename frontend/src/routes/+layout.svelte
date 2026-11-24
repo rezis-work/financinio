@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import TopNavProgress from '$lib/components/TopNavProgress.svelte';
 
 	let { children } = $props();
 
@@ -17,4 +18,5 @@
 	});
 </script>
 
+<TopNavProgress />
 {@render children()}

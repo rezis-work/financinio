@@ -31,6 +31,142 @@
 	transition: filter 160ms ease;
 }
 
+/* Signature Financinio Motion & Loading Animations */
+@keyframes fin-spin-slow {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes fin-spin-reverse {
+	from {
+		transform: rotate(360deg);
+	}
+	to {
+		transform: rotate(0deg);
+	}
+}
+
+@keyframes fin-bar-wave {
+	0%,
+	100% {
+		transform: scaleY(0.32);
+		opacity: 0.45;
+	}
+	50% {
+		transform: scaleY(1);
+		opacity: 1;
+	}
+}
+
+@keyframes fin-shimmer-sweep {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(220%);
+	}
+}
+
+@keyframes fin-float {
+	0%,
+	100% {
+		transform: translateY(0px);
+	}
+	50% {
+		transform: translateY(-7px);
+	}
+}
+
+@keyframes fin-nav-progress {
+	0% {
+		transform: translateX(-100%) scaleX(0.35);
+	}
+	50% {
+		transform: translateX(20%) scaleX(0.7);
+	}
+	100% {
+		transform: translateX(120%) scaleX(0.45);
+	}
+}
+
+.fin-orbit {
+	animation: fin-spin-slow 3.2s linear infinite;
+}
+
+.fin-orbit-reverse {
+	animation: fin-spin-reverse 5.5s linear infinite;
+}
+
+.fin-bar {
+	transform-origin: bottom;
+	animation: fin-bar-wave 1.15s ease-in-out infinite;
+}
+
+.fin-float {
+	animation: fin-float 3.8s ease-in-out infinite;
+}
+
+.fin-shimmer-track {
+	position: relative;
+	overflow: hidden;
+}
+
+.fin-shimmer-track::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	width: 48%;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(52, 211, 153, 0.45) 50%,
+		transparent 100%
+	);
+	animation: fin-shimmer-sweep 1.5s ease-in-out infinite;
+}
+
+.fin-nav-bar {
+	animation: fin-nav-progress 1.25s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Upgrade all skeleton cards with sleek diagonal shimmer sweep */
+.card-surface.animate-pulse {
+	position: relative;
+	overflow: hidden;
+	animation: none;
+}
+
+.card-surface.animate-pulse::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	width: 60%;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(148, 163, 184, 0.09) 45%,
+		rgba(52, 211, 153, 0.08) 55%,
+		transparent 100%
+	);
+	animation: fin-shimmer-sweep 1.65s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fin-orbit,
+	.fin-orbit-reverse,
+	.fin-bar,
+	.fin-float,
+	.fin-nav-bar,
+	.fin-shimmer-track::after,
+	.card-surface.animate-pulse::after {
+		animation: none !important;
+	}
+}
+
 /* Rich Financial Markdown Typography (.luna-prose) */
 .luna-prose {
 	font-size: 0.9375rem;

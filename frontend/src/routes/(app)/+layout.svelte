@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import FinancinioLoader from '$lib/components/FinancinioLoader.svelte';
 	import {
 		LayoutDashboard,
 		Wallet,
@@ -66,9 +67,7 @@
 </script>
 
 {#if auth.loading}
-	<div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-		Loading Financinio...
-	</div>
+	<FinancinioLoader fullscreen />
 {:else if auth.user}
 	<div class="min-h-screen flex bg-slate-950 text-slate-100">
 		<!-- Desktop Sidebar -->
