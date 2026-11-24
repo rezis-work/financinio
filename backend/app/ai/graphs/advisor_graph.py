@@ -37,6 +37,10 @@ from app.services.planning_service import (
     simulate_what_if,
 )
 from app.services.vector_service import VectorMemoryBackend, get_vector_service
+from app.services.web_search_service import (
+    run_openai_live_web_search,
+    sanitize_unverified_markdown_links,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1025,7 +1029,7 @@ def build_advisor_graph(
         }
 
     async def web_researcher_node(state: AdvisorState) -> dict[str, Any]:
-        """Live Google Search Grounded Research Agent combined with user's real budget limits."""
+        """Live Web Research Agent (OpenAI Responses web_search & Gemini Google Search) + real budget limits."""
         query = _last_user_text(state.get("messages", []))
         profile = await compute_financial_health_profile(db, user)
         cf = profile["cash_flow_ratios"]
@@ -1062,63 +1066,106 @@ def build_advisor_graph(
         if model is not None:
             sys_prompt = (
                 f"{LUNA_SENIOR_CFO_PROMPT}\n\n"
-                "Active Specialist: **Live Web Research & Budget Match Agent (Google Search Grounded)**.\n"
+                "Active Specialist: **Live Web Research & Budget Match Agent**.\n"
                 "PRIVACY RULE: NEVER include the user's personal identity or raw account info in web searches — use only generic public search terms (city, neighborhood, price range, currency, product/service).\n\n"
                 f"User's Real Financial Affordability Benchmarks (JSON):\n{json.dumps(budget_benchmarks, indent=2)}\n\n"
+                "STRICT URL INTEGRITY RULE (CRITICAL):\n"
+                "- You MUST run a live web search before answering.\n"
+                "- ONLY link to EXACT verbatim URLs actually returned in the live web search tool results.\n"
+                "- NEVER guess, invent, or synthesize a URL slug (for example, NEVER write fake paths like `myhome.ge/en/for-sale/apartment/1-bedroom-70k`).\n"
+                "- If search returns category/search pages or market guides rather than individual listing URLs, link ONLY to the exact verified pages returned and tell the user honestly.\n\n"
                 "RESEARCH & RESPONSE INSTRUCTIONS:\n"
-                "1. Use **Google Search** to find current, real-world results matching the user's request "
-                "(for Georgia/Tbilisi housing, check major portals like myhome.ge, ss.ge, korter.ge; for banking/rates check nbg.gov.ge, bog.ge, tbcbank.ge; for products/travel use reputable current listings).\n"
-                "2. Open with a crisp **Budget Ceiling & Search Verdict** tying their real monthly income/surplus or liquid cash to current market prices.\n"
-                "3. Present real options, market price ranges, or listings found in a clean **Markdown table** with:\n"
+                "1. Search the live web for current, real-world listings, prices, or rates matching the user's request "
+                "(for Georgia/Tbilisi housing, search portals like myhome.ge, ss.ge, korter.ge, livo.ge; for banking/rates search nbg.gov.ge, bog.ge, tbcbank.ge).\n"
+                "2. Open with a crisp **Budget Ceiling & Search Verdict** tying their real monthly income/surplus or liquid cash (or any explicit budget they stated) to live market prices.\n"
+                "3. Present ONLY verified results found via live search in a clean **Markdown table** with:\n"
                 "   - Option / Listing / Neighborhood / Provider\n"
-                "   - Current Price / Rate\n"
-                "   - **Budget Fit Verdict** (e.g., `Fits (24% of income)`, `Tight (33%)`, or `Over Budget`)\n"
-                "   - Direct source link when available (NEVER invent or guess fake listing URLs — only use real URLs returned by search or top-level portal links).\n"
-                "4. Close with 2–3 concrete next steps (e.g., offer to set up a moving/purchase savings goal right in chat)."
+                "   - Verified Price / Rate from search results\n"
+                "   - **Budget Fit Verdict** (e.g., `Fits Budget`, `Tight`, or `Over Budget`)\n"
+                "   - Exact verified clickable link from search results\n"
+                "4. Close with 2–3 concrete next steps (e.g., offer to set up a purchase/moving savings goal right in chat)."
             )
 
-            search_model: Any = model
-            used_google_search = False
-            if (
-                model.__class__.__name__ == "ChatGoogleGenerativeAI"
-                and hasattr(model, "bind_tools")
-            ):
+            model_cls = model.__class__.__name__
+            answer = ""
+            web_cits: list[dict[str, Any]] = []
+            search_queries: list[str] = []
+
+            # Path A: OpenAI Responses API live web_search (real verified URLs!)
+            if model_cls == "ChatOpenAI":
+                conv_msgs: list[dict[str, str]] = []
+                for m in state["messages"][-6:]:
+                    role = "user" if isinstance(m, HumanMessage) else "assistant"
+                    conv_msgs.append({"role": role, "content": str(m.content)})
+                try:
+                    live_res = await run_openai_live_web_search(
+                        system_instructions=sys_prompt,
+                        conversation_messages=conv_msgs,
+                    )
+                    if live_res is not None:
+                        answer = live_res.answer_text
+                        web_cits = live_res.citations
+                        search_queries = live_res.search_queries
+                        if search_queries:
+                            citations.append(
+                                {
+                                    "source": "Live Web Search",
+                                    "label": " · ".join(search_queries[:3])[:140],
+                                }
+                            )
+                        else:
+                            citations.append(
+                                {
+                                    "source": "Live Web Search",
+                                    "label": f"OpenAI Web Search ({live_res.model_name or 'live'})",
+                                }
+                            )
+                        citations.extend(web_cits)
+                except Exception as exc:
+                    logger.warning("OpenAI live web search failed: %s", exc)
+
+            # Path B: Google Gemini native Google Search grounding
+            if not answer and model_cls == "ChatGoogleGenerativeAI" and hasattr(model, "bind_tools"):
                 try:
                     search_model = model.bind_tools([{"google_search": {}}])
-                    used_google_search = True
-                except Exception as exc:
-                    logger.warning("Failed to bind google_search tool, falling back: %s", exc)
-
-            try:
-                resp = await search_model.ainvoke(
-                    [SystemMessage(content=sys_prompt), *state["messages"][-6:]]
-                )
-            except Exception as exc:
-                if used_google_search:
-                    logger.warning("Google Search grounded call failed, retrying ungrounded: %s", exc)
-                    resp = await model.ainvoke(
+                    resp = await search_model.ainvoke(
                         [SystemMessage(content=sys_prompt), *state["messages"][-6:]]
                     )
-                else:
-                    raise
+                    raw_answer = _extract_ai_text(resp)
+                    web_cits, search_queries = _extract_grounding_citations(resp)
+                    verified_urls = {str(c["url"]) for c in web_cits if c.get("url")}
+                    answer = sanitize_unverified_markdown_links(raw_answer, verified_urls)
+                    if search_queries:
+                        citations.append(
+                            {
+                                "source": "Google Search",
+                                "label": " · ".join(search_queries[:3])[:140],
+                            }
+                        )
+                    else:
+                        citations.append(
+                            {
+                                "source": "Google Search",
+                                "label": "Live web grounding enabled",
+                            }
+                        )
+                    citations.extend(web_cits)
+                except Exception as exc:
+                    logger.warning("Gemini Google Search grounding failed: %s", exc)
 
-            answer = _extract_ai_text(resp)
-            web_cits, search_queries = _extract_grounding_citations(resp)
-            if search_queries:
+            # Safe fallback if provider does not support live search or search failed
+            if not answer:
+                resp = await model.ainvoke(
+                    [SystemMessage(content=sys_prompt), *state["messages"][-6:]]
+                )
+                raw_answer = _extract_ai_text(resp)
+                answer = sanitize_unverified_markdown_links(raw_answer, set())
                 citations.append(
                     {
-                        "source": "Google Search",
-                        "label": " · ".join(search_queries[:3])[:140],
+                        "source": "Web Search Notice",
+                        "label": "Live search temporarily unavailable — unverified deep links stripped",
                     }
                 )
-            elif used_google_search:
-                citations.append(
-                    {
-                        "source": "Google Search",
-                        "label": "Live web grounding enabled",
-                    }
-                )
-            citations.extend(web_cits)
         else:
             answer = (
                 f"### Live Web Research + Budget Fit ({user.base_currency})\n\n"
@@ -1129,7 +1176,7 @@ def build_advisor_graph(
                 f"| Avg Monthly Surplus | `{user.base_currency} {cf['avg_monthly_surplus']}/mo` |\n"
                 f"| Liquid Cash Available | `{user.base_currency} {bs['liquid_cash']}` |\n"
                 f"| Emergency Runway | `{cf['emergency_runway_months']} months` |\n\n"
-                "*(Live Google Search grounding requires a configured `GOOGLE_API_KEY` on the server.)*"
+                "*(Configure an `OPENAI_API_KEY` or `GOOGLE_API_KEY` on the server to enable live web search.)*"
             )
 
         return {

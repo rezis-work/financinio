@@ -278,3 +278,56 @@ async def test_web_researcher_stream_endpoint(
         assert done_msg["active_agent"] == "web_researcher"
         assert any(c["source"] == "CFP Budget Guardrail" for c in done_msg["citations"])
         assert "30% Rule" in done_msg["content"]
+
+
+def test_openai_web_search_citations_and_link_sanitizer() -> None:
+    from types import SimpleNamespace
+
+    from app.services.web_search_service import (
+        extract_openai_response_citations,
+        sanitize_unverified_markdown_links,
+    )
+
+    fake_openai_resp = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="web_search_call",
+                action=SimpleNamespace(query="Didi Digomi apartments for sale myhome.ge"),
+            ),
+            SimpleNamespace(
+                type="message",
+                content=[
+                    SimpleNamespace(
+                        annotations=[
+                            SimpleNamespace(
+                                type="url_citation",
+                                url="https://www.myhome.ge/en/s/iyideba-bina-didi-dighomi/",
+                                title="Apartments for sale in Didi Digomi — MyHome.ge",
+                            ),
+                            SimpleNamespace(
+                                type="url_citation",
+                                url="https://korter.ge/en/didi-digomi-tbilisi",
+                                title="New buildings in Didi Digomi — Korter.ge",
+                            ),
+                        ]
+                    )
+                ],
+            ),
+        ]
+    )
+
+    cits, queries = extract_openai_response_citations(fake_openai_resp)
+    assert queries == ["Didi Digomi apartments for sale myhome.ge"]
+    assert len(cits) == 2
+    assert cits[0]["domain"] == "myhome.ge"
+    assert cits[1]["url"] == "https://korter.ge/en/didi-digomi-tbilisi"
+
+    verified = {c["url"] for c in cits}
+    raw_md = (
+        "Verified: [MyHome Didi Digomi](https://www.myhome.ge/en/s/iyideba-bina-didi-dighomi/) "
+        "Fake: [1-Bedroom Listing](https://myhome.ge/en/for-sale/apartment/1-bedroom-apartment-in-didi-digomi-70k)"
+    )
+    sanitized = sanitize_unverified_markdown_links(raw_md, verified)
+    assert "(https://www.myhome.ge/en/s/iyideba-bina-didi-dighomi/)" in sanitized
+    assert "1-bedroom-apartment-in-didi-digomi-70k" not in sanitized
+    assert "**1-Bedroom Listing**" in sanitized
