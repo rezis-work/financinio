@@ -306,6 +306,10 @@ export const api = {
 				user_approved: boolean;
 				merchant_clean?: string;
 				category_id?: string | null;
+				direction?: 'inflow' | 'outflow';
+				amount?: string;
+				occurred_at?: string;
+				description?: string | null;
 			}>;
 			skip_duplicates: boolean;
 			learn_from_edits: boolean;
