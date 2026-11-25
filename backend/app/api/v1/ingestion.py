@@ -16,9 +16,11 @@ from sqlalchemy.orm import selectinload
 from app.ai.checkpointer import checkpointer_manager
 from app.ai.graphs.ingestion_graph import build_ingestion_graph
 from app.ai.observability import build_langgraph_config
+from app.ai.security import sanitize_rag_chunk, sanitize_untrusted_field
 from app.api.deps import get_current_user, get_storage_dep, get_vector_dep
 from app.core.database import get_db
 from app.core.storage import StorageBackend
+from app.models.audit import AuditLog
 from app.models.finance import Account, CategorizationRule, Category, Transaction
 from app.models.ingestion import ImportBatch, StagedTransaction, UploadedDocument
 from app.models.user import User
@@ -278,16 +280,43 @@ async def upload_and_parse_document(
         ) from exc
 
     staged_rows = result.get("staged_rows", [])
-    extracted_text = result.get("extracted_text", "")
+    raw_extracted_text = result.get("extracted_text", "")
+    extracted_text, rag_injection_detected, rag_injection_cats = sanitize_rag_chunk(
+        raw_extracted_text, max_chars=250_000
+    )
     document.extracted_text = extracted_text
 
-    # Index PDF/receipt text chunks into Upstash Vector for semantic RAG
+    if rag_injection_detected:
+        logger.warning(
+            "Sanitized suspected indirect prompt injection in uploaded document %s (%s): %s",
+            document.id,
+            filename,
+            rag_injection_cats,
+        )
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="ai.rag_injection_sanitized",
+                resource_type="uploaded_document",
+                resource_id=str(document.id),
+                details={
+                    "filename": sanitize_untrusted_field(filename, max_chars=120),
+                    "categories": rag_injection_cats,
+                },
+            )
+        )
+
+    # Index sanitized PDF/receipt text chunks into Upstash Vector for semantic RAG
     if doc_type in ("pdf_statement", "bog_pdf", "receipt") and extracted_text:
         await vector_service.upsert_document_chunks(
             user_id=current_user.id,
             document_id=document.id,
             chunks=_chunk_text(extracted_text),
-            metadata={"filename": filename, "doc_type": doc_type, "account_id": str(account.id)},
+            metadata={
+                "filename": sanitize_untrusted_field(filename, max_chars=160),
+                "doc_type": doc_type,
+                "account_id": str(account.id),
+            },
         )
 
     staged_models: list[StagedTransaction] = []
@@ -326,7 +355,11 @@ async def upload_and_parse_document(
     batch.duplicate_rows = sum(1 for s in staged_models if s.is_duplicate)
     batch.needs_review_rows = sum(1 for s in staged_models if s.needs_review)
     batch.balance_reconciled = result.get("balance_reconciled")
-    batch.reconciliation_note = result.get("reconciliation_note")
+    rec_note = result.get("reconciliation_note")
+    if rag_injection_detected:
+        sec_note = "Security notice: embedded instruction-like text in this file was neutralized before AI indexing."
+        rec_note = f"{rec_note} {sec_note}".strip() if rec_note else sec_note
+    batch.reconciliation_note = rec_note
 
     await db.commit()
 

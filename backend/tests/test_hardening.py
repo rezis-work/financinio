@@ -88,8 +88,8 @@ async def test_rate_limiter_and_eval_suites() -> None:
     assert remaining == 0
     assert retry_after >= 1
 
-    # Verify all 4 LangSmith/offline evaluation suites score 100%
+    # Verify all 5 LangSmith/offline evaluation suites score 100%
     results = await run_all_evals(sync_langsmith=False)
-    assert len(results) == 4
+    assert len(results) == 5
     for r in results:
         assert r.score == 100.0, f"Eval suite {r.suite} scored {r.score}%: {r.details}"

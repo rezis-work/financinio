@@ -37,7 +37,10 @@
 
 		return DOMPurify.sanitize(withResponsiveTables, {
 			USE_PROFILES: { html: true },
-			ADD_ATTR: ['target', 'rel']
+			ADD_ATTR: ['target', 'rel'],
+			ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|\/)/i,
+			FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'button'],
+			FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'style']
 		});
 	});
 </script>

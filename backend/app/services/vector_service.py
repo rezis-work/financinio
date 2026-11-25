@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from app.ai.security import (
+    sanitize_rag_chunk,
+    sanitize_untrusted_field,
+    validate_memory_fact,
+)
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -151,10 +156,14 @@ class UpstashVectorService:
         try:
             from upstash_vector import Vector
 
+            safe_raw = sanitize_untrusted_field(merchant_raw, max_chars=160)
+            safe_clean = sanitize_untrusted_field(merchant_clean, max_chars=160)
+            if not safe_raw:
+                return
             vec_id = hashlib.sha256(
-                f"{user_id}:{merchant_raw.lower().strip()}".encode()
+                f"{user_id}:{safe_raw.lower().strip()}".encode()
             ).hexdigest()[:32]
-            text = f"{merchant_raw} | {merchant_clean}".strip()
+            text = f"{safe_raw} | {safe_clean}".strip()
             await self._index.upsert(  # type: ignore[union-attr]
                 vectors=[
                     Vector(
@@ -162,9 +171,9 @@ class UpstashVectorService:
                         data=text,
                         metadata={
                             "category_id": category_id,
-                            "category_name": category_name,
-                            "merchant_clean": merchant_clean,
-                            "merchant_raw": merchant_raw[:160],
+                            "category_name": sanitize_untrusted_field(category_name, max_chars=80),
+                            "merchant_clean": safe_clean,
+                            "merchant_raw": safe_raw,
                         },
                     )
                 ],
@@ -185,20 +194,35 @@ class UpstashVectorService:
         try:
             from upstash_vector import Vector
 
-            vectors = [
-                Vector(
-                    id=f"{document_id}:{idx}",
-                    data=chunk[:2000],
-                    metadata={
-                        **metadata,
-                        "document_id": str(document_id),
-                        "chunk_index": idx,
-                        "excerpt": chunk[:600],
-                    },
+            safe_meta = {
+                **metadata,
+                "filename": sanitize_untrusted_field(str(metadata.get("filename", "Uploaded Document")), max_chars=160),
+            }
+            vectors = []
+            for idx, raw_chunk in enumerate(chunks[:100]):
+                clean_chunk, injected, cats = sanitize_rag_chunk(raw_chunk, max_chars=2000)
+                if injected:
+                    logger.warning(
+                        "Sanitized suspected indirect prompt injection in document %s chunk %d: %s",
+                        document_id,
+                        idx,
+                        cats,
+                    )
+                if not clean_chunk:
+                    continue
+                vectors.append(
+                    Vector(
+                        id=f"{document_id}:{idx}",
+                        data=clean_chunk,
+                        metadata={
+                            **safe_meta,
+                            "document_id": str(document_id),
+                            "chunk_index": idx,
+                            "excerpt": clean_chunk[:600],
+                            "sanitized_injection": injected,
+                        },
+                    )
                 )
-                for idx, chunk in enumerate(chunks[:100])
-                if chunk.strip()
-            ]
             if vectors:
                 await self._index.upsert(  # type: ignore[union-attr]
                     vectors=vectors,
@@ -224,12 +248,17 @@ class UpstashVectorService:
             for item in results:
                 meta = getattr(item, "metadata", None) or {}
                 raw_data = getattr(item, "data", None) or meta.get("excerpt", "")
+                safe_excerpt, _, _ = sanitize_rag_chunk(str(raw_data), max_chars=600)
                 matches.append(
                     DocumentSearchMatch(
                         document_id=str(meta.get("document_id", item.id)),
-                        filename=str(meta.get("filename", "Uploaded Document")),
-                        doc_type=str(meta.get("doc_type", "document")),
-                        excerpt=str(raw_data)[:600],
+                        filename=sanitize_untrusted_field(
+                            str(meta.get("filename", "Uploaded Document")), max_chars=160
+                        ),
+                        doc_type=sanitize_untrusted_field(
+                            str(meta.get("doc_type", "document")), max_chars=40
+                        ),
+                        excerpt=safe_excerpt,
                         score=round(float(getattr(item, "score", 0.0)), 3),
                     )
                 )
@@ -252,8 +281,14 @@ class UpstashVectorService:
     async def remember_user_fact(
         self, user_id: UUID, fact: str, category: str = "preference"
     ) -> UserFactMatch:
+        is_safe, clean_or_reason, cats = validate_memory_fact(fact)
+        if not is_safe:
+            logger.warning("Blocked poisoned user memory write for user %s: %s", user_id, cats)
+            raise ValueError(clean_or_reason)
+
         fact_id = f"mem-{uuid4().hex[:16]}"
-        clean_fact = fact.strip()[:500]
+        clean_fact = clean_or_reason[:500]
+        safe_category = sanitize_untrusted_field(category, max_chars=48) or "preference"
         if self.enabled:
             try:
                 from upstash_vector import Vector
@@ -263,14 +298,14 @@ class UpstashVectorService:
                         Vector(
                             id=fact_id,
                             data=clean_fact,
-                            metadata={"fact": clean_fact, "category": category},
+                            metadata={"fact": clean_fact, "category": safe_category},
                         )
                     ],
                     namespace=self._user_memory_ns(user_id),
                 )
             except Exception as exc:  # pragma: no cover
                 logger.warning("Upstash Vector remember_user_fact failed: %s", exc)
-        return UserFactMatch(id=fact_id, fact=clean_fact, category=category)
+        return UserFactMatch(id=fact_id, fact=clean_fact, category=safe_category)
 
     async def recall_user_facts(
         self, user_id: UUID, query_text: str, top_k: int = 5
@@ -291,11 +326,16 @@ class UpstashVectorService:
                     continue
                 meta = getattr(item, "metadata", None) or {}
                 if meta.get("fact"):
+                    safe_fact, _, _ = sanitize_rag_chunk(str(meta["fact"]), max_chars=500)
+                    if not safe_fact:
+                        continue
                     out.append(
                         UserFactMatch(
                             id=str(item.id),
-                            fact=str(meta["fact"]),
-                            category=str(meta.get("category", "preference")),
+                            fact=safe_fact,
+                            category=sanitize_untrusted_field(
+                                str(meta.get("category", "preference")), max_chars=48
+                            ),
                             score=round(score, 3),
                         )
                     )

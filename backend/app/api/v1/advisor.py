@@ -13,9 +13,16 @@ from sqlalchemy.orm import selectinload
 from app.ai.checkpointer import checkpointer_manager
 from app.ai.graphs.advisor_graph import _execute_action_in_neon, build_advisor_graph
 from app.ai.observability import build_langgraph_config
+from app.ai.security import (
+    normalize_untrusted_text,
+    scrub_ai_output,
+    validate_memory_fact,
+    validate_proposed_action,
+)
 from app.api.deps import get_current_user, get_vector_dep
 from app.core.database import get_db
 from app.models.advisor import ChatMessage, ChatThread, ProactiveInsight
+from app.models.audit import AuditLog
 from app.models.base import utcnow
 from app.models.user import User
 from app.schemas.advisor import (
@@ -42,6 +49,7 @@ from app.services.vector_service import VectorMemoryBackend
 router = APIRouter(prefix="/advisor", tags=["Luna AI Financial Advisor"])
 
 NODE_STATUS_LABELS: dict[str, str] = {
+    "security_guard": "Verifying request safety...",
     "recall_memory": "Recalling your financial preferences...",
     "supervisor_router": "Luna is routing your request...",
     "decision_advisor": "Senior CFP Advisor is evaluating your ratios & trade-offs...",
@@ -149,7 +157,9 @@ async def stream_advisor_reply(
 
     enforce_ai_quota(current_user)
 
-    user_text = payload.message.strip()
+    user_text = normalize_untrusted_text(payload.message, max_chars=8000)
+    if not user_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message cannot be empty.")
     user_msg = ChatMessage(
         thread_id=thread.id,
         user_id=current_user.id,
@@ -189,6 +199,8 @@ async def stream_advisor_reply(
         active_agent = "general"
         citations: list[dict] = []
         interrupt_action: dict | None = None
+        security_blocked = False
+        security_categories: list[str] = []
 
         try:
             async for chunk in graph.astream(
@@ -216,6 +228,10 @@ async def stream_advisor_reply(
                             {"node": node_name, "label": NODE_STATUS_LABELS[node_name]},
                         )
                     if isinstance(node_out, dict):
+                        if node_out.get("security_blocked"):
+                            security_blocked = True
+                        if node_out.get("security_categories"):
+                            security_categories = list(node_out["security_categories"])
                         if node_out.get("active_agent"):
                             active_agent = str(node_out["active_agent"])
                         if node_out.get("citations"):
@@ -223,7 +239,18 @@ async def stream_advisor_reply(
                         msgs = node_out.get("messages") or []
                         if msgs:
                             last_msg = msgs[-1]
-                            final_content = str(getattr(last_msg, "content", ""))
+                            final_content = scrub_ai_output(str(getattr(last_msg, "content", "")))
+
+            if security_blocked:
+                db.add(
+                    AuditLog(
+                        user_id=current_user.id,
+                        action="ai.prompt_injection_blocked",
+                        resource_type="advisor_chat",
+                        resource_id=str(thread.id),
+                        details={"categories": security_categories},
+                    )
+                )
 
             if interrupt_action is not None:
                 title = interrupt_action.get("title", "Proposed Financial Action")
@@ -299,7 +326,7 @@ async def stream_advisor_reply(
             msg_dto = ChatMessageResponse.model_validate(assistant_msg).model_dump(mode="json")
             yield _sse_event("done", {"message": msg_dto})
         except Exception as exc:
-            yield _sse_event("error", {"detail": str(exc)})
+            yield _sse_event("error", {"detail": scrub_ai_output(str(exc)) or "Advisor error."})
 
     return StreamingResponse(
         event_stream(),
@@ -360,28 +387,35 @@ async def decide_hitl_action(
     followup_text = ""
 
     state_snap = await graph.aget_state(lg_config)
-    if state_snap and state_snap.next:
-        final_state = await graph.ainvoke(
-            Command(
-                resume={
-                    "approved": payload.approved,
-                    "override_params": payload.override_params or {},
-                }
-            ),
-            config=lg_config,
-        )
-        executed_result = final_state.get("executed_result")
-        msgs = final_state.get("messages") or []
-        if msgs:
-            followup_text = str(getattr(msgs[-1], "content", ""))
-    else:
-        # Fallback if checkpoint cleared between restarts
-        if payload.approved:
-            merged = {**msg.pending_action, **(payload.override_params or {})}
-            executed_result = await _execute_action_in_neon(db, current_user, merged)
-            followup_text = f"Approved and executed **{merged.get('title', 'action')}**."
+    try:
+        if state_snap and state_snap.next:
+            if payload.approved:
+                validate_proposed_action({**msg.pending_action, **(payload.override_params or {})})
+            final_state = await graph.ainvoke(
+                Command(
+                    resume={
+                        "approved": payload.approved,
+                        "override_params": payload.override_params or {},
+                    }
+                ),
+                config=lg_config,
+            )
+            executed_result = final_state.get("executed_result")
+            msgs = final_state.get("messages") or []
+            if msgs:
+                followup_text = scrub_ai_output(str(getattr(msgs[-1], "content", "")))
         else:
-            followup_text = "Canceled — nothing was changed in your account."
+            # Fallback if checkpoint cleared between restarts
+            if payload.approved:
+                merged = validate_proposed_action(
+                    {**msg.pending_action, **(payload.override_params or {})}
+                )
+                executed_result = await _execute_action_in_neon(db, current_user, merged)
+                followup_text = f"Approved and executed **{merged.get('title', 'action')}**."
+            else:
+                followup_text = "Canceled — nothing was changed in your account."
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     msg.action_status = "executed" if payload.approved else "rejected"
     if followup_text:
@@ -412,10 +446,26 @@ async def list_memories(
 async def add_memory(
     payload: UserMemoryCreateRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
     vector_service: VectorMemoryBackend = Depends(get_vector_dep),
 ) -> UserMemoryItem:
+    is_safe, clean_or_reason, cats = validate_memory_fact(payload.fact)
+    if not is_safe:
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="ai.memory_poisoning_blocked",
+                resource_type="user_memory",
+                details={"categories": cats},
+            )
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=clean_or_reason,
+        )
     item = await vector_service.remember_user_fact(
-        current_user.id, payload.fact, category=payload.category
+        current_user.id, clean_or_reason, category=payload.category
     )
     return UserMemoryItem(id=item.id, fact=item.fact, category=item.category)
 
