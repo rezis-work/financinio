@@ -13,6 +13,7 @@ from app.api.v1 import (
     markets,
     recurring,
     transactions,
+    voice,
     wealth,
 )
 
@@ -27,6 +28,7 @@ api_router.include_router(budgets.router)
 api_router.include_router(recurring.router)
 api_router.include_router(wealth.router)
 api_router.include_router(markets.router)
+api_router.include_router(voice.router)
 api_router.include_router(advisor.router)
 api_router.include_router(account_data.router)
 api_router.include_router(admin.router)

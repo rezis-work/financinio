@@ -30,6 +30,7 @@ import type {
 	NetWorthOverview,
 	NetWorthSnapshot,
 	PaperPortfolio,
+	ParsedVoiceTransaction,
 	ProactiveInsight,
 	QuoteDetail,
 	RecurringCadence,
@@ -41,6 +42,8 @@ import type {
 	TransactionListResponse,
 	User,
 	UserMemoryItem,
+	VoiceLanguage,
+	VoiceTranscribeResult,
 	WatchlistItem,
 	WhatIfResponse
 } from './types';
@@ -684,5 +687,51 @@ export const api = {
 		}),
 
 	resetPaperPortfolio: () =>
-		request<PaperPortfolio>('/markets/paper/reset', { method: 'POST' })
+		request<PaperPortfolio>('/markets/paper/reset', { method: 'POST' }),
+
+	// Voice-to-Ledger & Talk to Luna
+	voiceTranscribe: (audioBlob: Blob, language: VoiceLanguage = 'auto') => {
+		const ext = audioBlob.type.includes('mp4')
+			? 'm4a'
+			: audioBlob.type.includes('ogg')
+				? 'ogg'
+				: 'webm';
+		const form = new FormData();
+		form.append('file', audioBlob, `voice.${ext}`);
+		form.append('language', language);
+		return request<VoiceTranscribeResult>('/voice/transcribe', {
+			method: 'POST',
+			body: form
+		});
+	},
+
+	voiceParseTransaction: (transcript: string, language: VoiceLanguage = 'auto') =>
+		request<ParsedVoiceTransaction>('/voice/parse-transaction', {
+			method: 'POST',
+			body: JSON.stringify({ transcript, language })
+		}),
+
+	voiceSpeak: async (text: string, voice: 'nova' | 'alloy' | 'shimmer' = 'nova'): Promise<Blob> => {
+		let token = getStoredAccessToken();
+		const doFetch = (authTok: string | null) =>
+			fetch(`${API_BASE}/voice/speak`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(authTok ? { Authorization: `Bearer ${authTok}` } : {})
+				},
+				credentials: 'include',
+				body: JSON.stringify({ text, voice })
+			});
+
+		let res = await doFetch(token);
+		if (res.status === 401) {
+			token = await tryRefreshToken();
+			if (token) res = await doFetch(token);
+		}
+		if (!res.ok) {
+			throw new ApiError(res.status, 'Speech synthesis unavailable');
+		}
+		return res.blob();
+	}
 };

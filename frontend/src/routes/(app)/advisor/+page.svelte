@@ -1,10 +1,16 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api/client';
 	import { auth } from '$lib/stores/auth.svelte';
 	import MarkdownMessage from '$lib/components/MarkdownMessage.svelte';
+	import {
+		speakLunaText,
+		startAudioRecording,
+		stopSpeaking,
+		type ActiveRecorder
+	} from '$lib/utils/voice';
 	import type {
 		ChatMessage,
 		ChatThread,
@@ -33,7 +39,11 @@
 		ArrowDown,
 		ShieldCheck,
 		Globe,
-		ExternalLink
+		ExternalLink,
+		Mic,
+		Square,
+		Volume2,
+		VolumeX
 	} from 'lucide-svelte';
 
 	let sideTab = $state<'chats' | 'insights' | 'memory'>('chats');
@@ -49,6 +59,13 @@
 
 	let inputText = $state('');
 	let webSearchMode = $state<'auto' | 'on' | 'off'>('auto');
+	let handsFreeVoice = $state(false);
+	let recordingVoice = $state(false);
+	let transcribingVoice = $state(false);
+	let recordSec = $state(0);
+	let speakingMsgId = $state<string | null>(null);
+	let activeRecorder: ActiveRecorder | null = null;
+	let recordTimer: ReturnType<typeof setInterval> | undefined;
 	let streaming = $state(false);
 	let statusLabel = $state<string | null>(null);
 	let streamingText = $state('');
@@ -85,6 +102,93 @@
 		if (webSearchMode === 'auto') webSearchMode = 'on';
 		else if (webSearchMode === 'on') webSearchMode = 'off';
 		else webSearchMode = 'auto';
+	}
+
+	function toggleHandsFreeVoice() {
+		handsFreeVoice = !handsFreeVoice;
+		if (!handsFreeVoice) {
+			stopSpeaking();
+			speakingMsgId = null;
+		}
+	}
+
+	async function playMessageAudio(msg: ChatMessage) {
+		if (speakingMsgId === msg.id) {
+			stopSpeaking();
+			speakingMsgId = null;
+			return;
+		}
+		speakingMsgId = msg.id;
+		await speakLunaText(msg.content, () => {
+			if (speakingMsgId === msg.id) speakingMsgId = null;
+		});
+	}
+
+	function cleanupVoice() {
+		if (recordTimer) {
+			clearInterval(recordTimer);
+			recordTimer = undefined;
+		}
+		if (activeRecorder) {
+			activeRecorder.cancel();
+			activeRecorder = null;
+		}
+		recordingVoice = false;
+		recordSec = 0;
+		stopSpeaking();
+		speakingMsgId = null;
+	}
+
+	onDestroy(cleanupVoice);
+
+	async function toggleComposerMic() {
+		error = null;
+		if (recordingVoice && activeRecorder) {
+			if (recordTimer) {
+				clearInterval(recordTimer);
+				recordTimer = undefined;
+			}
+			recordingVoice = false;
+			transcribingVoice = true;
+			try {
+				const blob = await activeRecorder.stop();
+				activeRecorder = null;
+				const tr = await api.voiceTranscribe(blob, 'auto');
+				const spoken = tr.transcript.trim();
+				if (spoken) {
+					if (handsFreeVoice) {
+						await sendMessage(spoken);
+					} else {
+						inputText = inputText ? `${inputText.trim()} ${spoken}` : spoken;
+						await tick();
+						autoResizeTextarea();
+					}
+				}
+			} catch (e) {
+				error = e instanceof Error ? e.message : 'Voice transcription failed.';
+			} finally {
+				transcribingVoice = false;
+				recordSec = 0;
+			}
+			return;
+		}
+
+		try {
+			stopSpeaking();
+			speakingMsgId = null;
+			recordSec = 0;
+			activeRecorder = await startAudioRecording();
+			recordingVoice = true;
+			recordTimer = setInterval(() => {
+				recordSec += 1;
+				if (recordSec >= 45 && recordingVoice) {
+					toggleComposerMic();
+				}
+			}, 1000);
+		} catch (e) {
+			error =
+				e instanceof Error ? e.message : 'Microphone access was denied by your browser.';
+		}
 	}
 
 	const QUICK_FOLLOWUPS = [
@@ -131,6 +235,9 @@
 			memories = mems;
 			healthProfile = health;
 
+			if (page.url.searchParams.get('voice') === '1') {
+				handsFreeVoice = true;
+			}
 			const initialQuery =
 				page.url.searchParams.get('q') || page.url.searchParams.get('prompt');
 			if (initialQuery && initialQuery.trim()) {
@@ -228,6 +335,9 @@
 						statusLabel = null;
 						streaming = false;
 						scrollToBottom(true);
+						if (handsFreeVoice && msg.content) {
+							playMessageAudio(msg);
+						}
 					},
 					onError: (detail) => {
 						error = detail;
@@ -576,6 +686,37 @@
 			</div>
 
 			<div class="flex items-center gap-1.5 shrink-0">
+				{#if speakingMsgId}
+					<button
+						type="button"
+						onclick={() => {
+							stopSpeaking();
+							speakingMsgId = null;
+						}}
+						class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-semibold cursor-pointer transition"
+					>
+						<Square class="w-3 h-3 fill-current" />
+						<span class="hidden sm:inline">Stop</span>
+					</button>
+				{/if}
+				<button
+					type="button"
+					onclick={toggleHandsFreeVoice}
+					title={handsFreeVoice
+						? 'Hands-Free Talk to Luna: ON (auto-sends voice & speaks replies aloud)'
+						: 'Hands-Free Talk to Luna: OFF (click to enable spoken replies)'}
+					class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer transition {handsFreeVoice
+						? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+						: 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'}"
+				>
+					{#if handsFreeVoice}
+						<Volume2 class="w-3.5 h-3.5 text-cyan-300" />
+						<span class="hidden sm:inline">Voice On</span>
+					{:else}
+						<VolumeX class="w-3.5 h-3.5" />
+						<span class="hidden sm:inline">Voice</span>
+					{/if}
+				</button>
 				{#if healthProfile}
 					<button
 						type="button"
@@ -684,20 +825,38 @@
 												</span>
 											{/if}
 										</div>
-										<button
-											type="button"
-											onclick={() => copyMessage(msg)}
-											class="opacity-70 sm:opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-slate-400 hover:text-white hover:bg-slate-900 transition cursor-pointer"
-											title="Copy response"
-										>
-											{#if copiedMsgId === msg.id}
-												<Check class="w-3.5 h-3.5 text-emerald-400" />
-												<span class="text-emerald-400">Copied</span>
-											{:else}
-												<Copy class="w-3.5 h-3.5" />
-												<span class="hidden sm:inline">Copy</span>
-											{/if}
-										</button>
+										<div class="flex items-center gap-1">
+											<button
+												type="button"
+												onclick={() => playMessageAudio(msg)}
+												class="opacity-80 sm:opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] transition cursor-pointer {speakingMsgId === msg.id
+													? 'text-cyan-300 bg-cyan-500/15 opacity-100'
+													: 'text-slate-400 hover:text-cyan-300 hover:bg-slate-900'}"
+												title={speakingMsgId === msg.id ? 'Stop speaking' : 'Listen to Luna'}
+											>
+												{#if speakingMsgId === msg.id}
+													<Square class="w-3 h-3 fill-current" />
+													<span class="hidden sm:inline">Stop</span>
+												{:else}
+													<Volume2 class="w-3.5 h-3.5" />
+													<span class="hidden sm:inline">Listen</span>
+												{/if}
+											</button>
+											<button
+												type="button"
+												onclick={() => copyMessage(msg)}
+												class="opacity-70 sm:opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-slate-400 hover:text-white hover:bg-slate-900 transition cursor-pointer"
+												title="Copy response"
+											>
+												{#if copiedMsgId === msg.id}
+													<Check class="w-3.5 h-3.5 text-emerald-400" />
+													<span class="text-emerald-400">Copied</span>
+												{:else}
+													<Copy class="w-3.5 h-3.5" />
+													<span class="hidden sm:inline">Copy</span>
+												{/if}
+											</button>
+										</div>
 									</div>
 
 									<!-- Rich Formatted Markdown Body -->
@@ -891,6 +1050,29 @@
 							{webSearchMode === 'on' ? 'Web On' : webSearchMode === 'auto' ? 'Web Auto' : 'Web Off'}
 						</span>
 					</button>
+					<button
+						type="button"
+						onclick={toggleComposerMic}
+						disabled={streaming || transcribingVoice}
+						title={recordingVoice
+							? 'Tap to stop recording'
+							: 'Speak to Luna in English or Georgian'}
+						aria-label={recordingVoice ? 'Stop voice recording' : 'Speak to Luna'}
+						class="h-10 px-2.5 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition disabled:opacity-45 {recordingVoice
+							? 'bg-rose-500 border-rose-400 text-white animate-pulse'
+							: transcribingVoice
+								? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+								: 'bg-slate-950/90 border-slate-700/80 text-slate-300 hover:border-emerald-500/50 hover:text-emerald-300'}"
+					>
+						{#if recordingVoice}
+							<Square class="w-3.5 h-3.5 fill-current" />
+							<span class="font-mono-num text-[11px]">{recordSec}s</span>
+						{:else if transcribingVoice}
+							<span class="h-3.5 w-3.5 rounded-full border-2 border-cyan-300 border-t-transparent animate-spin"></span>
+						{:else}
+							<Mic class="w-4 h-4" />
+						{/if}
+					</button>
 					<textarea
 						bind:this={textareaEl}
 						bind:value={inputText}
@@ -898,9 +1080,11 @@
 						onkeydown={handleComposerKeydown}
 						disabled={streaming}
 						rows={1}
-						placeholder={webSearchMode === 'on'
-							? "Search live web + budget: 'Find 2-bed apartments in Vake under my rent cap'"
-							: "Ask Luna: 'Find apartments in Tbilisi in my budget' or 'Can I afford a $1,200 trip?'"}
+						placeholder={recordingVoice
+							? 'Listening (English or Georgian)... tap Stop when finished'
+							: webSearchMode === 'on'
+								? "Search live web + budget: 'Find 2-bed apartments in Vake under my rent cap'"
+								: "Ask or speak to Luna: 'What's NVDA doing today?' or 'Can I afford a $1,200 trip?'"}
 						class="flex-1 bg-transparent px-2 py-2 text-[15px] text-white placeholder:text-slate-500 focus:outline-none resize-none max-h-40 leading-relaxed"
 					></textarea>
 					<button

@@ -4,6 +4,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
 	import FinancinioLoader from '$lib/components/FinancinioLoader.svelte';
+	import VoiceLedgerModal from '$lib/components/VoiceLedgerModal.svelte';
 	import {
 		LayoutDashboard,
 		Wallet,
@@ -21,11 +22,13 @@
 		Sun,
 		Moon,
 		Menu,
-		X
+		X,
+		Mic
 	} from 'lucide-svelte';
 
 	let { children } = $props();
 	let mobileOpen = $state(false);
+	let voiceModalOpen = $state(false);
 
 	let navItems = $derived([
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -84,6 +87,18 @@
 						<div class="text-[11px] text-slate-400">Personal Finance AI</div>
 					</div>
 				</a>
+
+				<button
+					type="button"
+					onclick={() => (voiceModalOpen = true)}
+					class="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500/15 to-cyan-500/15 hover:from-emerald-500/25 hover:to-cyan-500/25 border border-emerald-500/35 text-xs font-semibold text-emerald-200 transition cursor-pointer"
+				>
+					<span class="inline-flex items-center gap-2">
+						<Mic class="w-4 h-4 text-emerald-400" />
+						Voice Quick-Log
+					</span>
+					<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-950/70 text-cyan-300 font-mono-num">EN/KA</span>
+				</button>
 
 				<nav class="space-y-1">
 					{#each navItems as item}
@@ -171,18 +186,29 @@
 					</div>
 					<span class="font-bold text-white">Financinio</span>
 				</a>
-				<button
-					type="button"
-					onclick={() => (mobileOpen = !mobileOpen)}
-					class="p-2 rounded-lg text-slate-300 hover:bg-slate-900"
-					aria-label="Toggle Menu"
-				>
-					{#if mobileOpen}
-						<X class="w-5 h-5" />
-					{:else}
-						<Menu class="w-5 h-5" />
-					{/if}
-				</button>
+				<div class="flex items-center gap-1.5">
+					<button
+						type="button"
+						onclick={() => (voiceModalOpen = true)}
+						class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 text-xs font-semibold cursor-pointer"
+						aria-label="Open Voice-to-Ledger"
+					>
+						<Mic class="w-4 h-4" />
+						<span>Voice</span>
+					</button>
+					<button
+						type="button"
+						onclick={() => (mobileOpen = !mobileOpen)}
+						class="p-2 rounded-lg text-slate-300 hover:bg-slate-900"
+						aria-label="Toggle Menu"
+					>
+						{#if mobileOpen}
+							<X class="w-5 h-5" />
+						{:else}
+							<Menu class="w-5 h-5" />
+						{/if}
+					</button>
+				</div>
 			</header>
 
 			{#if mobileOpen}
@@ -222,4 +248,6 @@
 			{/if}
 		</div>
 	</div>
+
+	<VoiceLedgerModal open={voiceModalOpen} onClose={() => (voiceModalOpen = false)} />
 {/if}

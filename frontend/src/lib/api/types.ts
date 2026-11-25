@@ -691,3 +691,29 @@ export interface PaperPortfolio {
 	positions: PaperPosition[];
 	recent_trades: PaperTrade[];
 }
+
+// --- Voice-to-Ledger & Talk to Luna ---
+
+export type VoiceLanguage = 'auto' | 'en' | 'ka';
+
+export interface VoiceTranscribeResult {
+	transcript: string;
+	language: string;
+	provider: string;
+}
+
+export interface ParsedVoiceTransaction {
+	intent: 'log_transaction' | 'ask_luna';
+	transcript: string;
+	amount: string | null;
+	currency: string;
+	direction: 'inflow' | 'outflow';
+	merchant: string;
+	occurred_at: string;
+	account_id: string | null;
+	account_name: string | null;
+	category_id: string | null;
+	category_name: string | null;
+	notes: string | null;
+	confidence: number;
+}
