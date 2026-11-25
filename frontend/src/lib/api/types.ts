@@ -748,3 +748,39 @@ export interface SendEmailDigestResult {
 	resend_email_id: string | null;
 	detail: string;
 }
+
+// --- Global Finance Newsroom ---
+
+export type NewsCategory = 'all' | 'for_you' | 'markets' | 'macro_fx' | 'georgia' | 'crypto_gold';
+export type NewsSentiment = 'bullish' | 'bearish' | 'neutral';
+
+export interface NewsArticle {
+	id: string;
+	title: string;
+	summary: string;
+	url: string;
+	source: string;
+	category: 'markets' | 'macro_fx' | 'georgia' | 'crypto_gold' | 'for_you';
+	sentiment: NewsSentiment;
+	tickers: string[];
+	published_at: string;
+	image_url: string | null;
+}
+
+export interface NewsFeedResponse {
+	category: NewsCategory;
+	total: number;
+	counts: Record<string, number>;
+	portfolio_symbols: string[];
+	updated_at: string;
+	articles: NewsArticle[];
+}
+
+export interface NewsBriefingResponse {
+	category: NewsCategory;
+	headline: string;
+	bullets: string[];
+	personal_takeaway: string;
+	articles_analyzed: number;
+	generated_at: string;
+}

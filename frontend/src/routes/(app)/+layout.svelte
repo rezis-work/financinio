@@ -14,6 +14,7 @@
 		Repeat,
 		Target,
 		TrendingUp,
+		Newspaper,
 		Settings,
 		ShieldCheck,
 		Infinity as InfinityIcon,
@@ -39,6 +40,7 @@
 		{ href: '/recurring', label: 'Recurring', icon: Repeat },
 		{ href: '/wealth', label: 'Wealth & Goals', icon: Target },
 		{ href: '/markets', label: 'Markets & Bot', icon: TrendingUp },
+		{ href: '/news', label: 'Global News', icon: Newspaper },
 		{ href: '/imports', label: 'AI Imports', icon: UploadCloud },
 		{ href: '/settings', label: 'Settings', icon: Settings },
 		...(auth.user?.role === 'admin'

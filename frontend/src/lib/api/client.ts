@@ -32,6 +32,9 @@ import type {
 	MarketsOverview,
 	NetWorthOverview,
 	NetWorthSnapshot,
+	NewsBriefingResponse,
+	NewsCategory,
+	NewsFeedResponse,
 	PaperPortfolio,
 	ParsedVoiceTransaction,
 	ProactiveInsight,
@@ -758,5 +761,23 @@ export const api = {
 		request<SendEmailDigestResult>('/emails/send-test', {
 			method: 'POST',
 			body: JSON.stringify({ digest_type: digestType })
+		}),
+
+	// Global Finance Newsroom
+	newsFeed: (
+		params: { category?: NewsCategory; q?: string; forceRefresh?: boolean } = {}
+	) => {
+		const qs = new URLSearchParams();
+		if (params.category) qs.set('category', params.category);
+		if (params.q) qs.set('q', params.q);
+		if (params.forceRefresh) qs.set('force_refresh', 'true');
+		const qStr = qs.toString();
+		return request<NewsFeedResponse>(`/news/feed${qStr ? `?${qStr}` : ''}`);
+	},
+
+	newsAiBriefing: (category: NewsCategory = 'all') =>
+		request<NewsBriefingResponse>('/news/ai-briefing', {
+			method: 'POST',
+			body: JSON.stringify({ category })
 		})
 };

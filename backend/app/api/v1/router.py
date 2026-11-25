@@ -12,6 +12,7 @@ from app.api.v1 import (
     emails,
     ingestion,
     markets,
+    news,
     recurring,
     transactions,
     voice,
@@ -29,6 +30,7 @@ api_router.include_router(budgets.router)
 api_router.include_router(recurring.router)
 api_router.include_router(wealth.router)
 api_router.include_router(markets.router)
+api_router.include_router(news.router)
 api_router.include_router(voice.router)
 api_router.include_router(emails.router)
 api_router.include_router(advisor.router)
