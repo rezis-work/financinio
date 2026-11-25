@@ -33,6 +33,20 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 
+    # Scheduled Email Digest Preferences
+    email_weekly_briefing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    email_monthly_wrapped: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    last_weekly_briefing_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_monthly_wrapped_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )

@@ -19,6 +19,9 @@ import type {
 	DebtPayoffComparison,
 	DeleteImportBatchResponse,
 	DetectRecurringResponse,
+	EmailDigestPreview,
+	EmailDigestType,
+	EmailPreferences,
 	FinancialGoal,
 	FinancialHealthProfile,
 	GoalType,
@@ -36,6 +39,7 @@ import type {
 	RecurringCadence,
 	RecurringItem,
 	RecurringOverview,
+	SendEmailDigestResult,
 	SymbolSearchHit,
 	SystemStatus,
 	Transaction,
@@ -733,5 +737,26 @@ export const api = {
 			throw new ApiError(res.status, 'Speech synthesis unavailable');
 		}
 		return res.blob();
-	}
+	},
+
+	// Scheduled Email Digests (Resend)
+	getEmailPreferences: () => request<EmailPreferences>('/emails/preferences'),
+
+	updateEmailPreferences: (payload: {
+		email_weekly_briefing?: boolean;
+		email_monthly_wrapped?: boolean;
+	}) =>
+		request<EmailPreferences>('/emails/preferences', {
+			method: 'PATCH',
+			body: JSON.stringify(payload)
+		}),
+
+	previewEmailDigest: (digestType: EmailDigestType) =>
+		request<EmailDigestPreview>(`/emails/preview?digest_type=${digestType}`),
+
+	sendEmailDigestNow: (digestType: EmailDigestType) =>
+		request<SendEmailDigestResult>('/emails/send-test', {
+			method: 'POST',
+			body: JSON.stringify({ digest_type: digestType })
+		})
 };

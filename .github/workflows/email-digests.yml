@@ -1,0 +1,55 @@
+name: Financinio Scheduled Email Digests
+
+on:
+  schedule:
+    # Monday 09:00 Tbilisi (UTC+4) = 05:00 UTC -> Luna CFO Weekly Briefing
+    - cron: '0 5 * * 1'
+    # 1st of every month 09:00 Tbilisi (UTC+4) = 05:00 UTC -> Monthly CFO Wrapped
+    - cron: '0 5 1 * *'
+  workflow_dispatch:
+    inputs:
+      digest_type:
+        description: 'Digest to dispatch'
+        required: true
+        default: 'weekly'
+        type: choice
+        options:
+          - weekly
+          - monthly
+      force:
+        description: 'Force resend even if recently sent'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  dispatch-emails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine digest type & dispatch
+        env:
+          API_URL: https://financinio-api.fly.dev
+          CRON_SECRET: ${{ secrets.FINANCINIO_CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "FINANCINIO_CRON_SECRET repo secret is not set; skipping."
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DIGEST="${{ inputs.digest_type }}"
+            FORCE="${{ inputs.force }}"
+          elif [ "${{ github.event.schedule }}" = "0 5 1 * *" ]; then
+            DIGEST="monthly"
+            FORCE="false"
+          else
+            DIGEST="weekly"
+            FORCE="false"
+          fi
+
+          echo "Dispatching $DIGEST email digest (force=$FORCE)..."
+          curl --fail-with-body -sS --max-time 60 -X POST \
+            "$API_URL/api/v1/emails/dispatch-scheduled" \
+            -H "Content-Type: application/json" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -d "{\"digest_type\": \"$DIGEST\", \"force\": $FORCE}"

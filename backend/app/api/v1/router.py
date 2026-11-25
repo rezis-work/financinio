@@ -9,6 +9,7 @@ from app.api.v1 import (
     budgets,
     categories,
     dashboard,
+    emails,
     ingestion,
     markets,
     recurring,
@@ -29,6 +30,7 @@ api_router.include_router(recurring.router)
 api_router.include_router(wealth.router)
 api_router.include_router(markets.router)
 api_router.include_router(voice.router)
+api_router.include_router(emails.router)
 api_router.include_router(advisor.router)
 api_router.include_router(account_data.router)
 api_router.include_router(admin.router)

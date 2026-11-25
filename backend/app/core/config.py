@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     admin_emails: str = ""
     default_user_ai_token_limit: int = 50_000
 
+    # Transactional & Scheduled Emails (Resend)
+    resend_api_key: str | None = None
+    email_from: str = "Luna at Financinio <onboarding@resend.dev>"
+    frontend_url: str = "https://financinio.vercel.app"
+    cron_secret: str | None = None
+
+    @property
+    def resend_configured(self) -> bool:
+        return bool(self.resend_api_key)
+
     @property
     def admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}

@@ -717,3 +717,34 @@ export interface ParsedVoiceTransaction {
 	notes: string | null;
 	confidence: number;
 }
+
+// --- Scheduled Email Digests (Resend) ---
+
+export type EmailDigestType = 'weekly' | 'monthly';
+
+export interface EmailPreferences {
+	email: string;
+	email_weekly_briefing: boolean;
+	email_monthly_wrapped: boolean;
+	last_weekly_briefing_sent_at: string | null;
+	last_monthly_wrapped_sent_at: string | null;
+	resend_configured: boolean;
+	sender_address: string;
+}
+
+export interface EmailDigestPreview {
+	digest_type: EmailDigestType;
+	subject: string;
+	preheader: string;
+	html: string;
+	metrics: Record<string, unknown>;
+}
+
+export interface SendEmailDigestResult {
+	sent: boolean;
+	digest_type: EmailDigestType;
+	recipient: string;
+	subject: string;
+	resend_email_id: string | null;
+	detail: string;
+}

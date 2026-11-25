@@ -12,12 +12,14 @@
 	} from '$lib/api/types';
 	import { formatDate } from '$lib/utils/format';
 	import FinancinioLoader from '$lib/components/FinancinioLoader.svelte';
+	import EmailDigestsPanel from '$lib/components/settings/EmailDigestsPanel.svelte';
 	import {
 		User as UserIcon,
 		Tag,
 		Wand2,
 		Shield,
 		Cpu,
+		Mail,
 		Plus,
 		Trash2,
 		CheckCircle2,
@@ -43,7 +45,7 @@
 		ChevronRight
 	} from 'lucide-svelte';
 
-	type SettingsTab = 'profile' | 'categories' | 'rules' | 'security' | 'system';
+	type SettingsTab = 'profile' | 'emails' | 'categories' | 'rules' | 'security' | 'system';
 
 	const COLOR_SWATCHES = [
 		'#10b981',
@@ -453,6 +455,7 @@
 		desc: string;
 	}> = [
 		{ id: 'profile', label: 'Profile & Workspace', desc: 'Currency, cycle & privacy' },
+		{ id: 'emails', label: 'Email Digests', desc: 'Weekly & Monthly CFO emails' },
 		{ id: 'categories', label: 'Categories Studio', desc: 'Custom colors & types' },
 		{ id: 'rules', label: 'AI Rules & Tester', desc: 'Zero-token Tier-1 rules' },
 		{ id: 'security', label: 'Data & Security', desc: 'Exports, audit log & danger' },
@@ -533,6 +536,8 @@
 				>
 					{#if item.id === 'profile'}
 						<UserIcon class="w-3.5 h-3.5" />
+					{:else if item.id === 'emails'}
+						<Mail class="w-3.5 h-3.5" />
 					{:else if item.id === 'categories'}
 						<Tag class="w-3.5 h-3.5" />
 					{:else if item.id === 'rules'}
@@ -568,6 +573,8 @@
 							>
 								{#if item.id === 'profile'}
 									<UserIcon class="w-4 h-4" />
+								{:else if item.id === 'emails'}
+									<Mail class="w-4 h-4" />
 								{:else if item.id === 'categories'}
 									<Tag class="w-4 h-4" />
 								{:else if item.id === 'rules'}
@@ -787,6 +794,16 @@
 							</button>
 						</div>
 					</form>
+
+				<!-- ==================== TAB 1.5: EMAIL DIGESTS ==================== -->
+				{:else if activeTab === 'emails'}
+					<EmailDigestsPanel
+						onNotice={(msg) => showToast(msg)}
+						onError={(msg) => {
+							error = msg;
+							toast = null;
+						}}
+					/>
 
 				<!-- ==================== TAB 2: CATEGORIES STUDIO ==================== -->
 				{:else if activeTab === 'categories'}
